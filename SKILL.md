@@ -14,8 +14,11 @@ Use this skill to identify and remove 360/Qihoo software without confusing unrel
 3. Never delete by a broad `*360*` search. Validate an exact path, installed-product record, executable path, service action, task action, digital signature, or product fingerprint.
 4. Do not touch Windows screen savers, GPU/device drivers, Driver Genius (驱动精灵), games, 360-degree media, hashes, or numeric asset directories merely because their names contain `360`.
 5. Restrict process termination to executables under confirmed target paths. Never kill a process because its command line contains a search term; the auditing shell itself may contain that term.
-6. Treat other mounted Windows installations as scan-only unless the user separately approves a named offline Windows root.
+6. Treat other mounted Windows installations as scan-only. The bundled script intentionally has no offline remove mode; a separate approval does not authorize bypassing that boundary.
 7. `winToolBox` is an Aolande/Huajun-family third-party toolbox, not a Microsoft or official 360 product. Treat it as PUP/bundleware only when local behavior supports that classification. Remove only a confirmed `SoftMgr*`/360 subtree, its updater persistence, and exact 360-linked updater binary. Preserve independent `kantu`, `clear`, `pdf`, and `zip` tools unless separately approved.
+8. Preserve 360 browser profiles by default because they can contain bookmarks, history, sessions, and other user data. Use the separate profile opt-in only after the user approves that exact data loss.
+9. Never overwrite an existing report or non-JSON file. Reports omit the local computer and user identity unless the user explicitly requests it.
+10. Do not force-stop a normal application merely because it loaded a target DLL. Default to reboot-and-verify for locked targets; Explorer restart and ACL repair are separate advanced approvals.
 
 ## Workflow
 
@@ -53,10 +56,14 @@ Do not assert this chain unless the local service, task action, product metadata
 After approval:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
 ```
 
-The script elevates through UAC when needed, records each action, releases Explorer DLL locks only when their full paths fall under confirmed targets, and preserves review-only findings.
+The script elevates through UAC when needed, records each action, and preserves review-only findings. It fails closed if a path is outside the exact allowlist, contains a reparse point, exceeds the target-count safety limit, or loses its evidence.
+
+Do not add `-IncludeBrowserProfiles` unless the user separately approves deleting browser data after backing up anything needed. That opt-in also requires `-BrowserProfileConfirmation DELETE-360-BROWSER-DATA`.
+
+Default removal does not restart Explorer, force-stop normal applications that loaded a target DLL, or take ownership of locked files. Read [references/troubleshooting.md](references/troubleshooting.md) before considering `-AllowExplorerRestart` or `-ForceLockedTargets`, explain the exact target and risk, and obtain a fresh approval.
 
 ### 5. Verify
 
@@ -70,6 +77,7 @@ Recommend one restart after deleting services or Explorer extensions, then scan 
 
 - For `Access denied` or Explorer shell-extension locks, read [references/troubleshooting.md](references/troubleshooting.md).
 - For another mounted Windows installation, pass `-OfflineWindowsRoot F:\` in `Scan` mode. Offline findings are report-only.
+- If the scan report contains a browser profile, keep it `ReviewOnly` unless the user explicitly chooses profile deletion.
 - Remove an orphan uninstall key only after verifying its install location no longer exists.
 - Prefer a functioning vendor uninstaller first; use deterministic cleanup for leftovers and broken uninstallers.
 
