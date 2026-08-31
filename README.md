@@ -21,10 +21,11 @@
 1. 关闭正在运行的 360 软件和浏览器。
 2. 双击 `scripts\Remove-360.cmd`。
 3. 阅读警告，按 `Y` 确认。
-4. Windows 弹出管理员授权窗口时点击“是”。
-5. 完成后重启电脑一次。
+4. 再输入 `REMOVE-360`；输入错误、直接回车或按 `N` 都会安全退出并返回非成功状态。
+5. Windows 弹出管理员授权窗口时点击“是”。
+6. 完成后重启电脑一次。
 
-删除是永久操作，不会进入回收站。脚本只自动删除带有确定证据的目标；可疑但证据不足的项目只会写入报告。
+删除是永久操作，不会进入回收站。脚本只自动删除“精确允许路径 + 本机产品证据”同时成立的目标；可疑但证据不足的项目只会写入报告。浏览器书签、历史记录和用户配置默认保留。
 
 ### 第三步：验证
 
@@ -61,6 +62,17 @@ $windows-360-cleaner 帮我先扫描这台电脑上的 360 全家桶，不要直
 - Explorer 加载的 `qcnethelp64.dll`、`xhqcnethelp64.dll`、`SoftMgrExt64.dll` 等导致强删失败的模块。
 - 用户指定的其他 Windows 磁盘；默认只扫描，不跨系统删除。
 
+## 防呆与正常文件保护
+
+- JSON 报告只能新建，拒绝覆盖任何已有文件，也拒绝把报告写成 `.docx`、`.jpg` 等其他扩展名。
+- 删除目标必须位于内置的精确路径允许表中；用户文档、下载、照片、Windows 目录、磁盘根目录和宽泛临时目录会被拒绝。
+- 所有路径先整体预检；任何一个路径不安全时，服务、任务、注册表、进程和文件都不会开始修改。
+- 目标本身、父路径或内部任意子目录出现 junction、符号链接等重解析点时，删除会失败关闭，防止跳到目录外。
+- `Program Files\360` 等名称不再单独构成删除证据；还必须找到 360/Qihoo 产品元数据或有效数字签名。
+- 仅有 `360Base.dll` 等空文件名不能冒充 SoftMgr 证据。
+- 默认不强停加载 DLL 的普通程序，不自动修改文件所有权/ACL；锁定目标会保留到重启后复查。
+- 默认报告不记录电脑名和 Windows 用户名，便于脱敏分享。
+
 ## WinToolBox 到底是谁家的
 
 `WinToolBox` 不是微软或 Windows 官方软件，也不是 360 官方产品。我们在真实机器上确认其主程序、看图、清理和 PDF 组件由 **北京奥蓝德信息科技有限公司**签名；服务名还带有 `huajun`，与华军软件园体系相符。
@@ -77,7 +89,8 @@ $windows-360-cleaner 帮我先扫描这台电脑上的 360 全家桶，不要直
 - Windows 自带屏保，例如 `Bubbles.scr`、`PhotoScreensaver.scr`、`scrnsave.scr`。
 - 驱动精灵、显卡/网卡驱动、游戏目录和 Steam/iRacing 数字资源目录。
 - `winToolBox` 中独立的 `kantu`、`clear`、`pdf`、`zip` 工具，除非用户明确要求连这些工具一起删除。
-- 其他 Windows 安装中的文件，除非用户明确指定离线系统并再次批准。
+- `360Chrome`、`360se6`、`360browser` 中的浏览器个人资料；删除书签和历史记录需要单独的双重确认参数。
+- 其他 Windows 安装中的文件；本仓库提供的脚本对离线系统始终只有扫描模式，没有跨系统删除开关。
 
 ## PowerShell 用法
 
@@ -85,8 +98,12 @@ $windows-360-cleaner 帮我先扫描这台电脑上的 360 全家桶，不要直
 # 只扫描
 .\scripts\Invoke-360Cleanup.ps1 -Mode Scan
 
-# 删除已确认目标（需要管理员权限和明确开关）
-.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval
+# 删除已确认目标（需要管理员权限、开关和精确确认短语）
+.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
+
+# 高风险可选项：删除浏览器个人资料，必须先备份并单独批准
+.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360 `
+  -IncludeBrowserProfiles -BrowserProfileConfirmation DELETE-360-BROWSER-DATA
 
 # 删除后验证
 .\scripts\Invoke-360Cleanup.ps1 -Mode Verify
@@ -95,15 +112,26 @@ $windows-360-cleaner 帮我先扫描这台电脑上的 360 全家桶，不要直
 .\scripts\Invoke-360Cleanup.ps1 -Mode Scan -OfflineWindowsRoot F:\
 ```
 
+## 先验证工具本身
+
+运行下面的命令只会在系统临时目录创建并删除隔离夹具，不会对真实 360 软件执行删除：
+
+```powershell
+.\scripts\Test-360Cleaner.ps1
+```
+
+它会验证报告防覆盖、确认短语、取消退出码、普通 `360` 用户文件、浏览器书签、WinToolBox 保留目录、伪造 marker、重解析点外部 canary、锁文件、重复运行、目标数量上限和离线系统扫描。GitHub Actions 也会在每次提交时运行同一套测试。
+
 ## 为什么多绘屏保会“删了又回来”
 
 我们遇到过的真实链路是：第三方工具箱后台更新服务启动含 360 组件的软件管家任务，任务在临时目录生成 `huabaosetup.exe` 和 `360hb_tmp`，随后安装到 `AppData\Local\dhpingbao`。多绘屏保与软件管家的 DLL 还会被 Explorer 加载，因此普通删除会报“拒绝访问”。如果只删最终目录、不删有证据支持的下载服务和更新任务，它就可能再次出现。
 
-本项目把经验固化成可审计流程：先找下载源，再停服务和任务，然后按精确路径结束进程、释放 DLL 锁、删除目标，最后重新扫描。
+本项目把经验固化成可审计流程：先找下载源，再停服务和任务，然后只结束“可执行文件本身位于确认目录”的进程。普通软件仅仅加载了目标 DLL 时不会被强停；默认保留锁定目标，重启后再验证。
 
 ## 安全说明
 
 - 请先扫描并阅读结果；重要电脑建议先建立系统还原点。
+- `-AllowExplorerRestart` 和 `-ForceLockedTargets` 是高级故障处理选项，不在小白一键删除中启用；使用前必须再次解释并获得批准。
 - 不要从不可信的转载站下载修改版脚本。
 - 本项目无法保证覆盖每个历史版本或地区版本。
 - 如果正常软件被列为 `ReviewOnly`，不要手工强删；请提交 Issue，并附上脱敏后的路径、文件版本和签名信息。
