@@ -4,7 +4,7 @@ Read this reference when reviewing a finding, adding a detector, or deciding whe
 
 ## Confidence levels
 
-- `Confirmed`: exact product record, exact known path plus product fingerprint, or persistence action whose executable is under a confirmed path.
+- `Confirmed`: exact known path plus product metadata/digital-signature evidence, or persistence action whose executable is under a confirmed path. A filename or directory name alone is insufficient.
 - `ReviewOnly`: name match, offline-system path, unsigned component, system driver, or ambiguous toolbox component. Never automatically remove it.
 
 ## Confirmed product families
@@ -30,25 +30,25 @@ These are strong candidates. Payload paths should contain the expected marker sh
 - `%LOCALAPPDATA%\dhpingbao` (`duohuipingbao.exe` or `huabaosetup.exe`)
 - `%TEMP%\duohuipingbao` (`360hb_tmp`, `duohuipingbao.exe`, or `huabaosetup.exe`)
 - `%TEMP%\huabao_tmp` (`huabaosetup.exe`)
-- `%APPDATA%\360se6`
-- `%APPDATA%\360browser`
+- `%APPDATA%\360se6` (browser profile; preserve by default)
+- `%APPDATA%\360browser` (browser profile; preserve by default)
 - `%APPDATA%\360Safe`
 - `%APPDATA%\360GameAssistant`
 - `%APPDATA%\360huabao`
 - `%APPDATA%\360DrvMgrScrSaver`
-- `%LOCALAPPDATA%\360Chrome`
+- `%LOCALAPPDATA%\360Chrome` (browser profile; preserve by default)
 - `%APPDATA%\greencore` (`360greencore.exe`)
 - `%APPDATA%\GreenCore7z` (`360greencore.exe` or paired confirmed SoftMgr evidence)
 - `%APPDATA%\SoftMgr*` (`softmgrsvr.exe`, `SoftMgrUpdate.exe`, or 360 DLL markers)
 
-Known temporary packages include `%TEMP%\360greencore.cab`, `%TEMP%\360se*.cab`, `%TEMP%\360gameassistantYyb`, and `%TEMP%\360UnPackTmp64`.
+Known temporary package names include `%TEMP%\360greencore.cab`, `%TEMP%\360se*.cab`, `%TEMP%\360gameassistantYyb`, and `%TEMP%\360UnPackTmp64`. A CAB filename pattern alone is `ReviewOnly`; automatic deletion requires product evidence.
 
 ## Exact machine paths
 
-- `%ProgramFiles%\360`
-- `%ProgramFiles(x86)%\360`
-- `%ProgramData%\360`
-- `%ProgramData%\360safe`
+- `%ProgramFiles%\360` only with a local file carrying 360/Qihoo metadata or a valid Qihu/Qihoo signature
+- `%ProgramFiles(x86)%\360` with the same evidence
+- `%ProgramData%\360` paired with confirmed machine-install evidence or its own signed/identified component
+- `%ProgramData%\360safe` with the same paired evidence
 - `%ProgramFiles%\softmgr` only when product metadata or marker files identify 360/SoftMgr
 
 Do not delete every directory named `360`. Games and asset libraries often use that number as an ID.
@@ -66,7 +66,7 @@ Do not delete the complete `%LOCALAPPDATA%\winToolBox` tree merely because these
 A `Tools\SoftMgr*` subtree is confirmed when at least one of these holds:
 
 - `softmgrsvr.exe` has `CompanyName` containing `360.cn`, `Qihoo`, or `Qihu`.
-- It contains multiple markers such as `360Base.dll`, `360Conf.dll`, `360NetBase.dll`, or `360Util.dll`.
+- A marker such as `360Base.dll`, `360Conf.dll`, `360NetBase.dll`, or `360Util.dll` itself carries 360/Qihoo product metadata or a valid signature. Empty files or names alone never confirm it.
 - Its `SoftMgrUpdate.exe` is used by a `SoftMgrUpdate*` scheduled task and a related 360 payload appeared at a matching time.
 
 When confirmed, remove only:
@@ -75,9 +75,11 @@ When confirmed, remove only:
 - Scheduled tasks whose action points into that subtree.
 - `WinToolBoxUpdateSrv` only when its executable is the exact `%LOCALAPPDATA%\winToolBox\winToolBoxSrv.exe` and SoftMgr evidence is confirmed.
 - The exact `winToolBoxSrv.exe` updater binary after removing its service.
-- Paired `greencore` and roaming `SoftMgr*` caches with matching evidence.
+- `greencore` and roaming `SoftMgr*` caches only when those exact directories contain their own signed/identified evidence; a nearby confirmed bundle does not authorize deleting a name-only cache.
 
 Preserve `Tools\kantu`, `Tools\clear`, `Tools\pdf`, and `Tools\zip` unless the user separately approves removing them.
+
+Root-level Qihu-signed DLLs can confirm only those exact DLL files. They do not by themselves authorize deleting `winToolBoxSrv.exe`, roaming `SoftMgr*` caches, or the whole toolbox; a confirmed SoftMgr subtree is required for that paired updater chain.
 
 ## Persistence indicators
 
@@ -92,6 +94,17 @@ Remove persistence only when both the entry and target match.
 ## Explorer lock indicators
 
 Known DLLs include `qcnethelp64.dll`, `xhqcnethelp64.dll`, `SoftMgrExt64.dll`, and `analyst.dll`. The DLL name alone is insufficient. Confirm that its full path is under a confirmed target.
+
+Default removal records external module holders but does not force-stop normal or system applications. Treat a reboot followed by `Verify` as the first recovery step. Explorer restart and exact-target ACL repair are separate advanced options, never the default.
+
+## Path safety invariants
+
+- Every deletion must match the built-in exact path-shape allowlist in addition to being `Confirmed`.
+- Preflight every existing path target before changing services, tasks, registry entries, processes, or files; one unsafe path aborts the complete mutation plan.
+- Reject drive roots, Windows, known-folder roots, user documents, broad temporary roots, and unrecognized descendants even if a malformed finding labels them confirmed.
+- Reject a target if any existing path component or descendant is a junction, symbolic link, mount point, or other reparse point.
+- Revalidate the exact path before initial deletion and every retry.
+- Refuse more than 64 path targets or 256 total confirmed findings in one run; review the detector instead of broadening deletion.
 
 ## Review-only drivers
 
