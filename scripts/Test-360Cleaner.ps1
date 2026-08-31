@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -62,6 +62,11 @@ function Invoke-CleanupScriptProcess {
 
 $tokens = $null
 $parseErrors = $null
+foreach ($sourcePath in @($scriptPath, $PSCommandPath)) {
+    $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
+    Assert-True ($sourceBytes.Length -ge 3 -and $sourceBytes[0] -eq 0xEF -and $sourceBytes[1] -eq 0xBB -and $sourceBytes[2] -eq 0xBF) `
+        "PowerShell 5.1 compatibility requires a UTF-8 BOM: $sourcePath"
+}
 [void][System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count -gt 0) {
     $parseErrors | ForEach-Object { Write-Error $_.Message }
