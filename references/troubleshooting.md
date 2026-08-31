@@ -9,11 +9,14 @@ Explorer may load `qcnethelp64.dll`, `xhqcnethelp64.dll`, `SoftMgrExt64.dll`, or
 1. Verify the DLL's full path is under a confirmed target.
 2. Stop payload and updater services/tasks first so they cannot recreate it.
 3. Identify the exact Explorer PID loading the target-path DLL.
-4. Restart Explorer only when such a module is loaded.
-5. Retry the exact target. If ACLs are broken, take ownership and grant Administrators full control only on that validated target.
-6. Restore Explorer and verify.
+4. Default to rebooting and running `Verify`; do not force-stop a normal application that loaded the DLL.
+5. Use `-AllowExplorerRestart` only after separately approving an Explorer restart and only when Explorer loaded a DLL under the exact target.
+6. Retry without changing ACLs. If ACLs are still broken, use `-ForceLockedTargets` only after a fresh approval; the script validates the exact target before and after ACL repair.
+7. Restore Explorer and verify.
 
 Never take ownership of a user profile, drive root, Windows directory, or Program Files root.
+
+If a target, its parent chain, or any descendant is a junction, symbolic link, mount point, or other reparse point, stop. Do not override this refusal; inspect the link and target separately.
 
 ## The screen saver returns
 
@@ -35,6 +38,16 @@ Before removing an uninstall record, confirm its `InstallLocation` does not exis
 ## Multiple Windows installations
 
 Use `-OfflineWindowsRoot F:\` only with `-Mode Scan`. Findings are `ReviewOnly`. Offline ACLs, user SIDs, drive-letter changes, and boot configuration make cross-system cleanup riskier.
+
+The bundled script intentionally has no offline remove mode. Cleaning another installation requires a separately designed and approved workflow; do not repurpose `-ForceLockedTargets` to bypass this boundary.
+
+## Browser profile is still present
+
+`360Chrome`, `360se6`, and `360browser` profiles are `ReviewOnly` by default because they may contain bookmarks, history, sessions, and other user data. Back up needed data first. Only then, with a separate approval, use both `-IncludeBrowserProfiles` and `-BrowserProfileConfirmation DELETE-360-BROWSER-DATA`.
+
+## Report path is rejected
+
+Reports must use a new `.json` path. The script refuses to overwrite an existing file, even an older report, to prevent a typo from destroying a document. Pick a new filename or omit `-ReportPath` to generate a unique desktop report. Computer and user identity are omitted unless `-IncludeIdentityInReport` is explicitly requested.
 
 ## Process query matches the auditing shell
 
