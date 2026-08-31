@@ -1,0 +1,18 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse and run read-only scan
+        shell: powershell
+        run: .\scripts\Test-360Cleaner.ps1
+
