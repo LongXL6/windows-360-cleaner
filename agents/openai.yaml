@@ -1,0 +1,5 @@
+interface:
+  display_name: "Windows 360 Cleaner"
+  short_description: "Safely audit and remove confirmed 360/Qihoo Windows software"
+  default_prompt: "Use $windows-360-cleaner to audit this Windows PC for 360/Qihoo software and remove only confirmed targets after approval."
+
