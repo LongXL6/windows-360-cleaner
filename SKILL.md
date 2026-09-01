@@ -3,9 +3,9 @@ name: windows-360-cleaner
 description: Audit and safely remove confirmed 360/Qihoo Windows software, including browsers and security products, SoftMgr download components, Huabao/duohuipingbao screen savers, persistence, and leftovers. Use when a user asks to find, explain, uninstall, or clean 360-family software from Windows. Do not use for generic malware cleanup or deleting every path containing the number 360.
 ---
 
-# Windows 360 Cleaner
+# Windows 360 Cleaner Skill
 
-Use this skill to identify and remove 360/Qihoo software without confusing unrelated files, games, drivers, or ordinary uses of the number `360` with a 360 product.
+This repository is an agent skill package, not a standalone cleanup application. Use its PowerShell scripts as deterministic supporting resources to identify and remove 360/Qihoo software without confusing unrelated files, games, drivers, or ordinary uses of the number `360` with a 360 product.
 
 ## Safety rules
 
@@ -73,6 +73,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-360Clea
 
 Recommend one restart after deleting services or Explorer extensions, then scan again. If a target returns, re-audit the new file creation times, parent process, service, task, and startup source instead of repeatedly deleting only the payload.
 
+### 6. Report the measured outcome
+
+After removal, retain `Summary` from the Remove JSON report and keep `Actions` available for item-by-item auditing. The file, directory, and logical-byte totals are measured from deduplicated before-and-after path snapshots; do not describe logical bytes as actual freed disk space because hard links, sparse files, and compression can make them differ. When `PathAccountingComplete` is false, present path totals as minimum confirmed values. After running Verify, use its `Findings`—not its null `Summary`—for the final post-restart confirmed count.
+
 ## Special situations
 
 - For `Access denied` or Explorer shell-extension locks, read [references/troubleshooting.md](references/troubleshooting.md).
@@ -81,7 +85,13 @@ Recommend one restart after deleting services or Explorer extensions, then scan 
 - Remove an orphan uninstall key only after verifying its install location no longer exists.
 - Prefer a functioning vendor uninstaller first; use deterministic cleanup for leftovers and broken uninstallers.
 
-## Communication
+## Required final output
 
-Lead with what was found, distinguish confirmed from review-only items, state exactly what will be removed, and mention preserved software. After deletion, report whether files were permanently removed and whether a restart is recommended.
+Lead with what was found, distinguish confirmed from review-only items, state exactly what will be removed, and mention preserved software. After deletion and verification, always report every value below from `Summary`, including zero values:
 
+- `TotalItemsRemoved`, `FilesRemoved`, `DirectoriesRemoved`, `LogicalBytesRemoved`, and `LogicalSizeRemoved`.
+- `ServicesRemoved`, `ServicesPendingRemoval`, `ScheduledTasksRemoved`, `RegistryKeysRemoved`, and `RegistryValuesRemoved`.
+- `ProcessesStopped`, `SkippedActions`, `FailedActions`, `PendingActions`, `RetryAttempts`, and `UnresolvedRetryTargets`.
+- `PathTargetsRemoved`, `PartiallyCleanedPathTargets`, `ImmediateRemainingConfirmed`, `NoImmediateConfirmedFindings`, and `PathAccountingComplete`.
+
+If `PathAccountingComplete` is false, say that the path totals are minimum confirmed values and include `UnmeasuredPathTargets`. Then report the final count of `Confirmed` items from the Verify report's `Findings`. Say whether deletion was permanent, whether services are pending removal, whether anything remains, and whether a Windows restart is recommended. Never finish with only a vague statement such as “cleanup completed.”
