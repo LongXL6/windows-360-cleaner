@@ -1,11 +1,15 @@
 <p align="center">
+  <strong>简体中文</strong> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <img src="assets/readme/windows-360-cleaner-hero.jpg" alt="AI Agent 扫描、确认、安全清理并验证 Windows 软件的流程" width="100%">
 </p>
 
 <h1 align="center">Windows 360 Cleaner Skill</h1>
 
 <p align="center">
-  给 AI Agent/Codex 使用的 Windows 360/Qihoo 软件安全清理技能包<br>
+  给 Codex、豆包和其他 AI Agent 使用的 Windows 360/Qihoo 软件安全清理技能包<br>
   <strong>先扫描 · 人工确认 · 精确删除 · 重启验证 · 输出清理账单</strong>
 </p>
 
@@ -30,6 +34,21 @@
 删除后先读取 Remove JSON 报告中的 Summary；然后运行 Verify，并从 Verify JSON 报告的 Findings 统计最终剩余的 Confirmed 数。
 最终请清楚输出：总共删除的对象数、文件数、目录数、清除文件的逻辑大小、服务已删除/待重启删除数、计划任务数、注册表键/值数、停止的进程数、跳过/失败/待处理数、重试次数、未解决目标数、Verify 后剩余 Confirmed 数。即使某项为 0 也要写出来；不要把文件逻辑大小误称为实际释放的磁盘空间。
 ```
+
+## 豆包用户：复制下面整段
+
+豆包支持在对话中上传文件，但不同版本或模式能否直接操作本机 PowerShell 可能不同。下面的提示词要求它先检查自身能力，不能把“给出命令”说成“已经执行”。
+
+```text
+请把 https://github.com/LongXL6/windows-360-cleaner 当作一个 AI 技能包使用。
+请先读取仓库根目录的 SKILL.md；不要只看 README，也不要根据文件名搜索并强删所有含 360 的内容。
+开始前先明确告诉我：你当前是否真的能够读取这个仓库、访问这台 Windows 电脑的本机 PowerShell，并运行命令。
+如果可以操作终端，第一步只能运行 Scan。解释 Confirmed、ReviewOnly 和会保留的正常文件后停止，等待我明确批准；未经批准绝对不能运行 Remove。
+如果不能操作终端，不要声称已经扫描或删除。请让我下载仓库 ZIP，双击 scripts\Scan-360.cmd，再把生成的 JSON 报告上传给你解释。之后仍须等待我的明确批准，才能指导我双击 Remove-360.cmd。
+完成删除后必须运行 Verify，并按照 SKILL.md 的 Required final output 列出所有清理统计，即使某项为 0 也要写出来。
+```
+
+更详细的两种操作路线、上传报告时的隐私提醒和故障处理见 [豆包与通用 Agent 使用指南](references/doubao.md)。
 
 > [!WARNING]
 > 不要使用“搜索所有名字含 `360` 的文件然后强删”这种方法。数字 360 可能出现在照片、游戏地图、模型、哈希值和 Windows 文件中。本技能只处理“**精确允许路径 + 本机产品证据**”同时成立的目标。
@@ -111,6 +130,8 @@ $windows-360-cleaner 帮我先扫描这台电脑上的 360 全家桶，不要直
 ```
 
 Agent 应先读取 [SKILL.md](SKILL.md)。只有需要判断检测证据时才读取 [检测目录](references/detection-catalog.md)，遇到锁文件时才读取 [疑难排查](references/troubleshooting.md)。
+
+豆包和其他不支持 `$skill-name` 安装方式的 Agent 不需要修改技能名称：直接给它仓库链接，并要求先读取 `SKILL.md`。如果 Agent 无法运行本机命令，使用上面的手动 Scan 路线。
 
 <details>
 <summary><strong>不使用 Agent：双击脚本的备用方法</strong></summary>
@@ -221,9 +242,10 @@ windows-360-cleaner/
 ├── SKILL.md                    # Agent 的入口与安全规则
 ├── agents/openai.yaml          # Codex 展示信息
 ├── scripts/                    # Scan / Remove / Verify 与隔离测试
-├── references/                 # 检测证据和疑难排查
-├── assets/readme/              # README 原创教学图片
-└── README.md                   # 给普通用户看的说明
+├── references/                 # 检测证据、豆包指南和疑难排查
+├── assets/readme/              # README 原创教学图片与微信二维码
+├── README.en.md                # English guide
+└── README.md                   # 中文默认首页
 ```
 
 ## 安全说明
@@ -233,6 +255,19 @@ windows-360-cleaner/
 - 本项目无法保证覆盖每个历史版本、地区版本或未来变体。
 - 正常软件若进入 `ReviewOnly`，不要手工强删；请提交 Issue，并附脱敏后的路径、文件版本和签名信息。
 - “PUP/潜在不受欢迎软件”是行为与用户同意层面的分类，不等于在法律上宣称其为病毒或木马。
+
+## 联系作者
+
+遇到无法判断的 `ReviewOnly` 项目，优先提交公开的 [GitHub Issue](https://github.com/LongXL6/windows-360-cleaner/issues)，这样解决方案也能帮助其他用户。需要通过微信联系作者时，可以点击或扫描下面的二维码。
+
+<p align="center">
+  <a href="assets/readme/wechat-longxl.jpg">
+    <img src="assets/readme/wechat-longxl.jpg" alt="微信联系 LONG XL 的二维码" width="260">
+  </a>
+</p>
+
+> [!NOTE]
+> 微信是个人联系渠道，不提供付费远程控制，也不要向任何人发送密码、验证码或未脱敏的私人文件。项目问题仍建议优先使用 GitHub Issue。
 
 ## License
 
