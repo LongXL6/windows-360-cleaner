@@ -720,12 +720,83 @@ function Assert-SafeReportPath {
     return $target
 }
 
+function Get-RemovalTargetStats {
+    param([string]$Path)
+
+    $target = Get-NormalPath $Path
+    if (-not $target -or -not (Test-Path -LiteralPath $target)) {
+        return [pscustomobject]@{ Files = [int64]0; Directories = [int64]0; Bytes = [int64]0 }
+    }
+
+    $files = [int64]0
+    $directories = [int64]0
+    $bytes = [int64]0
+    $rootItem = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+    if ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Refusing to measure a reparse-point target: $target"
+    }
+    if (-not $rootItem.PSIsContainer) {
+        return [pscustomobject]@{ Files = [int64]1; Directories = [int64]0; Bytes = [int64]$rootItem.Length }
+    }
+
+    $directories = [int64]1
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push($target)
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Refusing to measure a tree containing a reparse point: $($item.FullName)"
+            }
+            if ($item.PSIsContainer) {
+                $directories++
+                $pending.Push($item.FullName)
+            }
+            else {
+                $files++
+                $bytes += [int64]$item.Length
+            }
+        }
+    }
+    return [pscustomobject]@{ Files = $files; Directories = $directories; Bytes = $bytes }
+}
+
+function Get-TopLevelAccountingTargets {
+    param([string[]]$Targets)
+
+    $result = New-Object System.Collections.ArrayList
+    foreach ($candidate in @($Targets)) {
+        $nested = $false
+        foreach ($other in @($Targets)) {
+            if ($candidate.Equals($other, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (Test-IsUnderPath $candidate $other) { $nested = $true; break }
+        }
+        if (-not $nested) { [void]$result.Add($candidate) }
+    }
+    return @($result)
+}
+
+function Format-ByteSize {
+    param([int64]$Bytes)
+
+    if ($Bytes -lt 1024) { return ('{0} B' -f $Bytes) }
+    $units = @('B', 'KB', 'MB', 'GB', 'TB')
+    $value = [double]$Bytes
+    $unitIndex = 0
+    while ($value -ge 1024 -and $unitIndex -lt ($units.Count - 1)) {
+        $value /= 1024
+        $unitIndex++
+    }
+    return ('{0:N2} {1}' -f $value, $units[$unitIndex])
+}
+
 function Save-CleanupReport {
     param(
         [string]$Path,
         [string]$RunMode,
         [object[]]$Findings,
         [object[]]$Actions,
+        [object]$Summary = $null,
         [bool]$IncludeIdentity = $false
     )
 
@@ -739,6 +810,7 @@ function Save-CleanupReport {
         ComputerName = $(if ($IncludeIdentity) { $env:COMPUTERNAME } else { $null })
         User          = $(if ($IncludeIdentity) { [Security.Principal.WindowsIdentity]::GetCurrent().Name } else { $null })
         Mode          = $RunMode
+        Summary       = $Summary
         Findings      = @($Findings)
         Actions       = @($Actions)
     }
@@ -786,7 +858,8 @@ function Remove-ConfirmedFindings {
     param(
         [object[]]$Findings,
         [switch]$AllowExplorerRestart,
-        [switch]$ForceLockedTargets
+        [switch]$ForceLockedTargets,
+        [System.Collections.IDictionary]$Summary = $null
     )
 
     $actions = New-Object System.Collections.ArrayList
@@ -801,12 +874,29 @@ function Remove-ConfirmedFindings {
         }
     }
 
+    # Count only top-level targets so nested allowlisted paths are never double-counted.
+    $accountingTargets = @(Get-TopLevelAccountingTargets $pathTargets)
+    $initialPathStats = @{}
+    foreach ($target in $accountingTargets) {
+        if (-not (Test-Path -LiteralPath $target)) { continue }
+        try { $initialPathStats[$target] = Get-RemovalTargetStats $target }
+        catch {
+            throw "Removal accounting preflight failed for path target: $target. No changes were made. $($_.Exception.Message)"
+        }
+    }
+
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Service' })) {
         try {
             Stop-Service -Name $finding.Target -Force -ErrorAction SilentlyContinue
             $output = & sc.exe delete $finding.Target 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE. $($output.Trim())" }
-            Add-Action $actions 'DeleteService' $finding.Target 'Success' $output.Trim()
+            if ($null -ne (Get-Service -Name $finding.Target -ErrorAction SilentlyContinue)) {
+                Add-Action $actions 'DeleteService' $finding.Target 'PendingRemoval' `
+                    'Windows accepted the delete request, but the service still exists and may require a restart.'
+            }
+            else {
+                Add-Action $actions 'DeleteService' $finding.Target 'Success' $output.Trim()
+            }
         }
         catch { Add-Action $actions 'DeleteService' $finding.Target 'Failed' $_.Exception.Message }
     }
@@ -814,6 +904,9 @@ function Remove-ConfirmedFindings {
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Task' })) {
         try {
             Unregister-ScheduledTask -TaskName $finding.Target -TaskPath $finding.ValueName -Confirm:$false -ErrorAction Stop
+            if ($null -ne (Get-ScheduledTask -TaskName $finding.Target -TaskPath $finding.ValueName -ErrorAction SilentlyContinue)) {
+                throw 'The scheduled task still exists after the unregister request.'
+            }
             Add-Action $actions 'DeleteTask' ($finding.ValueName + $finding.Target) 'Success'
         }
         catch { Add-Action $actions 'DeleteTask' ($finding.ValueName + $finding.Target) 'Failed' $_.Exception.Message }
@@ -838,6 +931,9 @@ function Remove-ConfirmedFindings {
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'RegistryValue' })) {
         try {
             Remove-ItemProperty -LiteralPath $finding.Target -Name $finding.ValueName -Force -ErrorAction Stop
+            if ($null -ne (Get-ItemProperty -LiteralPath $finding.Target -Name $finding.ValueName -ErrorAction SilentlyContinue)) {
+                throw 'The registry value still exists after the delete request.'
+            }
             Add-Action $actions 'DeleteRegistryValue' ($finding.Target + ' :: ' + $finding.ValueName) 'Success'
         }
         catch { Add-Action $actions 'DeleteRegistryValue' ($finding.Target + ' :: ' + $finding.ValueName) 'Failed' $_.Exception.Message }
@@ -846,6 +942,7 @@ function Remove-ConfirmedFindings {
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'RegistryKey' })) {
         try {
             Remove-Item -LiteralPath $finding.Target -Recurse -Force -ErrorAction Stop
+            if (Test-Path -LiteralPath $finding.Target) { throw 'The registry key still exists after the delete request.' }
             Add-Action $actions 'DeleteRegistryKey' $finding.Target 'Success'
         }
         catch { Add-Action $actions 'DeleteRegistryKey' $finding.Target 'Failed' $_.Exception.Message }
@@ -960,7 +1057,122 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'RestartExplorer' 'explorer.exe' 'Failed' $_.Exception.Message }
     }
 
+    $filesRemoved = [int64]0
+    $directoriesRemoved = [int64]0
+    $bytesRemoved = [int64]0
+    $pathTargetsRemoved = 0
+    $partiallyCleanedPathTargets = 0
+    $unmeasuredPathTargets = 0
+    foreach ($target in $accountingTargets) {
+        if (-not $initialPathStats.ContainsKey($target)) { continue }
+        $before = $initialPathStats[$target]
+        try {
+            if (Test-Path -LiteralPath $target) {
+                if (-not (Test-SafeRemovalTarget $target)) {
+                    throw 'The remaining target no longer passes the exact path and reparse-point safety checks.'
+                }
+                $after = Get-RemovalTargetStats $target
+            }
+            else {
+                $after = [pscustomobject]@{ Files = [int64]0; Directories = [int64]0; Bytes = [int64]0 }
+            }
+
+            $fileDelta = [int64][Math]::Max([int64]0, ([int64]$before.Files - [int64]$after.Files))
+            $directoryDelta = [int64][Math]::Max([int64]0, ([int64]$before.Directories - [int64]$after.Directories))
+            $byteDelta = [int64][Math]::Max([int64]0, ([int64]$before.Bytes - [int64]$after.Bytes))
+            $filesRemoved += $fileDelta
+            $directoriesRemoved += $directoryDelta
+            $bytesRemoved += $byteDelta
+            if (-not (Test-Path -LiteralPath $target)) {
+                $pathTargetsRemoved++
+            }
+            elseif (($fileDelta + $directoryDelta + $byteDelta) -gt 0) {
+                $partiallyCleanedPathTargets++
+            }
+        }
+        catch {
+            $unmeasuredPathTargets++
+            Add-Action $actions 'MeasureRemoval' $target 'Failed' $_.Exception.Message
+        }
+    }
+
+    $serviceCount = @($actions | Where-Object { $_.Action -eq 'DeleteService' -and $_.Result -eq 'Success' }).Count
+    $servicePendingCount = @($actions | Where-Object { $_.Action -eq 'DeleteService' -and $_.Result -eq 'PendingRemoval' }).Count
+    $taskCount = @($actions | Where-Object { $_.Action -eq 'DeleteTask' -and $_.Result -eq 'Success' }).Count
+    $registryKeyCount = @($actions | Where-Object { $_.Action -eq 'DeleteRegistryKey' -and $_.Result -eq 'Success' }).Count
+    $registryValueCount = @($actions | Where-Object { $_.Action -eq 'DeleteRegistryValue' -and $_.Result -eq 'Success' }).Count
+    $processCount = @($actions | Where-Object { $_.Action -in @('StopProcess', 'StopModuleHolder') -and $_.Result -eq 'Success' }).Count
+    $skippedCount = @($actions | Where-Object { $_.Result -eq 'Skipped' }).Count
+    $failedCount = @($actions | Where-Object { $_.Result -eq 'Failed' }).Count
+    $pendingCount = @($actions | Where-Object { $_.Result -eq 'PendingRemoval' }).Count
+    $retryAttemptCount = @($actions | Where-Object { $_.Result -eq 'RetryRequired' }).Count
+    $unresolvedRetryCount = @($actions | Where-Object {
+        $_.Action -in @('DeletePathRetry', 'DeletePathForceRetry') -and $_.Result -in @('Skipped', 'Failed')
+    } | Select-Object -ExpandProperty Target -Unique).Count
+    $totalItemsRemoved = [int64]$filesRemoved + [int64]$directoriesRemoved + [int64]$serviceCount +
+        [int64]$taskCount + [int64]$registryKeyCount + [int64]$registryValueCount
+    $removalSummary = [pscustomobject]@{
+        TotalItemsRemoved           = $totalItemsRemoved
+        FilesRemoved                = $filesRemoved
+        DirectoriesRemoved          = $directoriesRemoved
+        LogicalBytesRemoved         = $bytesRemoved
+        LogicalSizeRemoved          = Format-ByteSize $bytesRemoved
+        PathTargetsRemoved          = $pathTargetsRemoved
+        PartiallyCleanedPathTargets = $partiallyCleanedPathTargets
+        ServicesRemoved             = $serviceCount
+        ServicesPendingRemoval      = $servicePendingCount
+        ScheduledTasksRemoved       = $taskCount
+        RegistryKeysRemoved         = $registryKeyCount
+        RegistryValuesRemoved       = $registryValueCount
+        ProcessesStopped            = $processCount
+        SkippedActions              = $skippedCount
+        FailedActions               = $failedCount
+        PendingActions              = $pendingCount
+        RetryAttempts               = $retryAttemptCount
+        UnresolvedRetryTargets      = $unresolvedRetryCount
+        PathAccountingComplete      = ($unmeasuredPathTargets -eq 0)
+        UnmeasuredPathTargets       = $unmeasuredPathTargets
+        ImmediateRemainingConfirmed = 0
+        NoImmediateConfirmedFindings = $false
+    }
+    if ($null -ne $Summary) {
+        $Summary.Clear()
+        foreach ($property in $removalSummary.PSObject.Properties) {
+            $Summary[$property.Name] = $property.Value
+        }
+    }
+
     return @($actions)
+}
+
+function Show-RemovalSummary {
+    param([object]$Summary)
+
+    if ($null -eq $Summary) { return }
+    $qualifier = $(if ($Summary.PathAccountingComplete) { '' } else { 'At least ' })
+    Write-Host ''
+    Write-Host 'Removal summary:' -ForegroundColor Cyan
+    Write-Host ("{0}total removed items: {1}" -f $qualifier, $Summary.TotalItemsRemoved)
+    Write-Host ("Files removed: {0}; directories removed: {1}" -f $Summary.FilesRemoved, $Summary.DirectoriesRemoved)
+    Write-Host ("Logical file content removed: {0} ({1} bytes); actual free-disk change can differ" -f `
+        $Summary.LogicalSizeRemoved, $Summary.LogicalBytesRemoved)
+    Write-Host ("Services removed: {0}; services pending restart/removal: {1}; scheduled tasks: {2}" -f `
+        $Summary.ServicesRemoved, $Summary.ServicesPendingRemoval, $Summary.ScheduledTasksRemoved)
+    Write-Host ("Registry keys: {0}; registry values: {1}; processes stopped: {2}" -f `
+        $Summary.RegistryKeysRemoved, $Summary.RegistryValuesRemoved, $Summary.ProcessesStopped)
+    Write-Host ("Skipped actions: {0}; failed actions: {1}; pending actions: {2}" -f `
+        $Summary.SkippedActions, $Summary.FailedActions, $Summary.PendingActions)
+    Write-Host ("Retry attempts: {0}; unresolved retry targets: {1}" -f `
+        $Summary.RetryAttempts, $Summary.UnresolvedRetryTargets)
+    Write-Host ("Fully removed path targets: {0}; partially cleaned path targets: {1}" -f `
+        $Summary.PathTargetsRemoved, $Summary.PartiallyCleanedPathTargets)
+    Write-Host ("Immediate remaining confirmed findings: {0}; no immediate confirmed findings: {1}" -f `
+        $Summary.ImmediateRemainingConfirmed, $Summary.NoImmediateConfirmedFindings)
+    Write-Host ("Path accounting complete: {0}; unmeasured path targets: {1}" -f `
+        $Summary.PathAccountingComplete, $Summary.UnmeasuredPathTargets)
+    if (-not $Summary.PathAccountingComplete) {
+        Write-Warning ("{0} path target(s) could not be measured safely; totals above are minimum confirmed values." -f $Summary.UnmeasuredPathTargets)
+    }
 }
 
 if ($InternalTestLibraryOnly) {
@@ -1030,19 +1242,25 @@ if ($Mode -eq 'Verify') {
     exit 0
 }
 
-$actions = @(Remove-ConfirmedFindings -Findings $initialFindings -AllowExplorerRestart:$AllowExplorerRestart -ForceLockedTargets:$ForceLockedTargets)
+$removalSummary = [ordered]@{}
+$actions = @(Remove-ConfirmedFindings -Findings $initialFindings -AllowExplorerRestart:$AllowExplorerRestart `
+    -ForceLockedTargets:$ForceLockedTargets -Summary $removalSummary)
 $remainingFindings = @(Get-360Findings -IncludeProfiles:$IncludeBrowserProfiles)
-Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $remainingFindings -Actions $actions -IncludeIdentity:$IncludeIdentityInReport
+$remainingConfirmed = @($remainingFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
+$removalSummary['ImmediateRemainingConfirmed'] = $remainingConfirmed
+$removalSummary['NoImmediateConfirmedFindings'] = ($remainingConfirmed -eq 0)
+Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $remainingFindings -Actions $actions `
+    -Summary $removalSummary -IncludeIdentity:$IncludeIdentityInReport
 
 Write-Host ''
 Write-Host 'Removal actions:' -ForegroundColor Cyan
 $actions | Format-Table Time, Action, Target, Result, Detail -AutoSize -Wrap
+Show-RemovalSummary $removalSummary
 Write-Host ''
 Write-Host 'Remaining findings:' -ForegroundColor Cyan
 Show-Findings $remainingFindings
 Write-Host "Report: $ReportPath" -ForegroundColor Cyan
 
-$remainingConfirmed = @($remainingFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
 if ($remainingConfirmed -gt 0) {
     Write-Warning "$remainingConfirmed confirmed finding(s) remain. Reboot and run Verify; do not broaden deletion without reviewing them."
     exit 2
@@ -1050,4 +1268,3 @@ if ($remainingConfirmed -gt 0) {
 
 Write-Host 'Confirmed targets were removed. Restart Windows once, then run Verify.' -ForegroundColor Green
 exit 0
-
