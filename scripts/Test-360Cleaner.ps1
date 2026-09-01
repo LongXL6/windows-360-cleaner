@@ -85,6 +85,8 @@ try {
     Assert-True (Test-Path -LiteralPath $scanReport) 'Scan did not create a report.'
     $json = Get-Content -LiteralPath $scanReport -Raw | ConvertFrom-Json
     Assert-True ([bool]$json.Timestamp -and $json.Mode -eq 'Scan' -and $null -ne $json.Findings) 'Report schema is incomplete.'
+    Assert-True ($json.PSObject.Properties.Name -contains 'Summary') 'Report schema must expose a Summary field.'
+    Assert-True ($null -eq $json.Summary) 'A read-only scan must not claim that content was removed.'
     Assert-True ($null -eq $json.ComputerName -and $null -eq $json.User) 'Reports must omit local identity by default.'
 
     $env:WINDOWS_360_CLEANER_TEST_MODE = 'ISOLATED-SAFETY-TEST'
@@ -117,6 +119,9 @@ try {
     Assert-True $extensionBlocked 'Non-JSON report paths must be rejected.'
 
     Assert-True (-not (Test-SafeRemovalTarget $script:KnownFolders.Temp)) 'A broad temporary root must never be removable.'
+    $deduplicated = @(Get-TopLevelAccountingTargets @('C:\isolated-root', 'C:\isolated-root\child', 'D:\separate-root'))
+    Assert-True ($deduplicated.Count -eq 2 -and $deduplicated -contains 'C:\isolated-root' -and $deduplicated -contains 'D:\separate-root') `
+        'Nested path targets must be deduplicated before removal accounting.'
     $normal360 = Join-Path $script:KnownFolders.UserProfile 'Documents\360'
     New-Item -ItemType Directory -Path $normal360 -Force | Out-Null
     $normalFile = Join-Path $normal360 'family-photo-360.txt'
@@ -152,11 +157,27 @@ try {
     $safeTarget = Join-Path $script:KnownFolders.Temp 'duohuipingbao'
     New-Item -ItemType Directory -Path $safeTarget | Out-Null
     Set-Content -LiteralPath (Join-Path $safeTarget 'payload.tmp') -Value 'ISOLATED-PAYLOAD'
-    $safeActions = @(Remove-ConfirmedFindings -Findings @((New-TestFinding $safeTarget)))
+    $safeSummary = [ordered]@{}
+    $safeActions = @(Remove-ConfirmedFindings -Findings @((New-TestFinding $safeTarget)) -Summary $safeSummary)
     Assert-True (-not (Test-Path -LiteralPath $safeTarget)) 'The isolated exact allowlisted target was not deleted.'
     Assert-True (@($safeActions | Where-Object { $_.Action -eq 'DeletePath' -and $_.Result -eq 'Success' }).Count -eq 1) 'Successful isolated deletion was not recorded.'
-    $repeatActions = @(Remove-ConfirmedFindings -Findings @((New-TestFinding $safeTarget)))
+    Assert-True ($safeSummary.PathAccountingComplete -and $safeSummary.FilesRemoved -eq 1 -and $safeSummary.DirectoriesRemoved -eq 1) `
+        'The removal summary did not count the isolated file and its parent directory.'
+    Assert-True ($safeSummary.TotalItemsRemoved -eq 2 -and $safeSummary.LogicalBytesRemoved -gt 0 -and [bool]$safeSummary.LogicalSizeRemoved) `
+        'The removal summary did not expose total items and logical file size.'
+    Assert-True (-not $safeSummary.Contains('FreedSpace')) 'The summary must not mislabel logical file size as actual freed disk space.'
+    Assert-True ($safeSummary.Contains('NoImmediateConfirmedFindings') -and -not $safeSummary.Contains('ImmediateRescanPassed')) `
+        'The summary must not describe a confirmed-finding count as an overall rescan pass.'
+    $summaryReport = Join-Path $fixtureRoot 'removal-summary.json'
+    Save-CleanupReport -Path $summaryReport -RunMode Remove -Findings @() -Actions $safeActions -Summary $safeSummary
+    $summaryJson = Get-Content -LiteralPath $summaryReport -Raw | ConvertFrom-Json
+    Assert-True ($summaryJson.Summary.TotalItemsRemoved -eq 2 -and $summaryJson.Summary.FilesRemoved -eq 1) `
+        'The JSON report did not preserve the removal summary.'
+    $repeatSummary = [ordered]@{}
+    $repeatActions = @(Remove-ConfirmedFindings -Findings @((New-TestFinding $safeTarget)) -Summary $repeatSummary)
     Assert-True ($repeatActions.Count -eq 0) 'Repeated cleanup of an absent target should be a no-op.'
+    Assert-True ($repeatSummary.PathAccountingComplete -and $repeatSummary.TotalItemsRemoved -eq 0 -and $repeatSummary.LogicalBytesRemoved -eq 0) `
+        'Repeated cleanup must report an accurate zero total.'
 
     $lockedTarget = Join-Path $script:KnownFolders.Temp 'huabao_tmp'
     New-Item -ItemType Directory -Path $lockedTarget | Out-Null
@@ -164,9 +185,12 @@ try {
     Set-Content -LiteralPath $lockedFile -Value 'LOCKED'
     $lockStream = New-Object IO.FileStream($lockedFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
-        $lockedActions = @(Remove-ConfirmedFindings -Findings @((New-TestFinding $lockedTarget)))
+        $lockedSummary = [ordered]@{}
+        $lockedActions = @(Remove-ConfirmedFindings -Findings @((New-TestFinding $lockedTarget)) -Summary $lockedSummary)
         Assert-True (Test-Path -LiteralPath $lockedTarget) 'A locked target was force-deleted in default mode.'
         Assert-True (@($lockedActions | Where-Object { $_.Action -eq 'DeletePathRetry' -and $_.Result -eq 'Skipped' }).Count -ge 1) 'Default locked-target refusal was not recorded.'
+        Assert-True ($lockedSummary.RetryAttempts -eq 1 -and $lockedSummary.UnresolvedRetryTargets -eq 1) `
+            'Retry attempts and final unresolved retry targets must be reported separately.'
     }
     finally { $lockStream.Dispose() }
     Remove-Item -LiteralPath $lockedTarget -Recurse -Force
@@ -234,4 +258,3 @@ finally {
         Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-
