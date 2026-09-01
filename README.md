@@ -1,10 +1,23 @@
-# Windows 360 Cleaner Skill
+# Windows 360 Cleaner Skill（技能包）
 
-一个面向普通 Windows 用户和 AI Agent 的开源清理工具，用于扫描并删除已经确认的 360/Qihoo 软件、360 安全浏览器、360 软件管家下载组件、360 画报/多绘屏保，以及相关服务、计划任务、启动项和卸载残留。
+这是一个让 AI Agent/Codex 读取并执行的开源 **Skill 技能包**，不是需要用户学习操作的独立清理软件。`scripts` 里的 PowerShell 只是技能包调用的确定性执行资源，用于安全扫描和删除已经确认的 360/Qihoo 软件、360 安全浏览器、360 软件管家下载组件、360 画报/多绘屏保及其持久化残留。
+
+## 30 秒快捷使用（直接复制下面这整段）
+
+把下面整段原样发给能够读取 GitHub 的 Agent：
+
+```text
+请把 https://github.com/LongXL6/windows-360-cleaner 当作一个 Skill 技能包使用，而不是普通清理工具。
+请先完整读取仓库根目录的 SKILL.md，并遵守其中所有安全边界；需要判断可疑目标时再读取 references。
+第一步只运行 Scan，不要删除，向我分别解释 Confirmed、ReviewOnly、会保留的正常文件和浏览器资料。
+只有在我看完扫描结果并明确批准后，才能执行 Remove；不要扩大允许路径，不要跨离线 Windows 系统删除。
+删除后先读取 Remove JSON 报告中的 Summary；然后运行 Verify，并从 Verify JSON 报告的 Findings 统计最终剩余的 Confirmed 数。
+最终请清楚输出：总共删除的对象数、文件数、目录数、清除文件的逻辑大小（字节和易读单位）、服务已删除/待重启删除数、计划任务数、注册表键/值数、停止的进程数、跳过/失败/待处理数、重试次数、未解决目标数、Verify 后剩余 Confirmed 数；即使某项为 0 也要写出来。如果路径统计不完整，必须说明这里只是最低确认值。不要把文件逻辑大小误称为实际释放的磁盘空间。
+```
 
 > 这不是“看到文件名里有 360 就全部删除”的脚本。数字 360 可能出现在游戏地图、全景图片、模型、哈希值和 Windows 文件中，粗暴删除很容易误伤系统或个人数据。
 
-## 最简单的使用方法
+## 不使用 Agent 时的备用方法
 
 ### 第一步：先扫描
 
@@ -31,13 +44,9 @@
 
 重启后双击 `scripts\Verify-360.cmd`。如果没有 `Confirmed` 项目，说明已确认的 360 组件没有重新出现。
 
-## 直接交给 AI Agent
+## Agent 执行入口
 
-把仓库链接发给支持读取 GitHub 的 Agent，然后说：
-
-> 请完整阅读仓库根目录的 `SKILL.md`，先只扫描我的 Windows 电脑，解释所有 Confirmed 和 ReviewOnly 项目；得到我确认后再清理，并在最后验证。
-
-Agent 应先读取 [SKILL.md](SKILL.md)，需要扩展检测时再读取 [检测目录](references/detection-catalog.md) 和 [疑难排查](references/troubleshooting.md)。
+Agent 必须先读取 [SKILL.md](SKILL.md)，需要判断或扩展检测时再读取 [检测目录](references/detection-catalog.md)，遇到锁文件时再读取 [疑难排查](references/troubleshooting.md)。不要让 Agent 一开始加载所有参考资料，也不要绕过扫描、授权和验证步骤。
 
 ## 安装为 Codex Skill
 
@@ -52,6 +61,18 @@ Agent 应先读取 [SKILL.md](SKILL.md)，需要扩展检测时再读取 [检测
 ```text
 $windows-360-cleaner 帮我先扫描这台电脑上的 360 全家桶，不要直接删除。
 ```
+
+## 删除完成后会输出什么
+
+终端和 JSON 报告的 `Summary` 会同时给出以下可核验统计：
+
+- 删除的总对象、文件、目录和文件逻辑字节数（另附 KB/MB/GB 易读值）。逻辑大小不冒充实际磁盘释放量，因为硬链接、稀疏文件和压缩文件可能让两者不同。
+- 已删除和仍待 Windows 重启后删除的服务数，以及已复核删除的计划任务、注册表键和注册表值数量。
+- 为清理而停止的目标进程数量，以及跳过、失败、待处理、重试和最终未解决的数量。
+- 完全删除及部分清理的目标数、立即复扫是否仍有 `Confirmed`；这不代表所有动作均成功，重启后的最终结果仍从 Verify 报告的 `Findings` 读取。
+- `PathAccountingComplete`：若为 `false`，说明某个路径因安全校验而无法测量，显示的总量只是“至少已确认删除”的数量，不会假装统计完整。
+
+文件、目录和字节数来自删除前后的安全快照差值；父子目标会先去重，因此不会因为同一目录被重复列出而重复计数。完整逐项动作仍保留在报告的 `Actions` 中，方便 Agent 或用户复查。
 
 ## 它会检查什么
 
@@ -140,4 +161,3 @@ $windows-360-cleaner 帮我先扫描这台电脑上的 360 全家桶，不要直
 ## 许可证
 
 [MIT](LICENSE)
-
