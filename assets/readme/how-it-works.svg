@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="720" viewBox="0 0 1440 720" role="img" aria-labelledby="title desc">
+  <title id="title">Windows 360 Cleaner Skill 四步安全清理流程</title>
+  <desc id="desc">把仓库链接交给 Agent，先扫描，再人工确认，最后删除并验证。证据不足的项目不会强制删除。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071426"/>
+      <stop offset="1" stop-color="#102b48"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#3b82f6"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#020617" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect width="1440" height="720" rx="36" fill="url(#bg)"/>
+  <circle cx="118" cy="84" r="92" fill="#0ea5e9" opacity="0.08"/>
+  <circle cx="1330" cy="640" r="150" fill="#22c55e" opacity="0.06"/>
+
+  <text x="720" y="72" text-anchor="middle" fill="#f8fafc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="38" font-weight="700">把链接交给 Agent，4 步完成安全清理</text>
+  <text x="720" y="116" text-anchor="middle" fill="#9fb5cc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20">先看清楚，再决定是否删除；每一步都可以停下来</text>
+
+  <path d="M350 365 H390" stroke="#38bdf8" stroke-width="5" stroke-linecap="round" opacity="0.75"/>
+  <path d="M380 352 L395 365 L380 378" fill="none" stroke="#38bdf8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M680 365 H720" stroke="#38bdf8" stroke-width="5" stroke-linecap="round" opacity="0.75"/>
+  <path d="M710 352 L725 365 L710 378" fill="none" stroke="#38bdf8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M1010 365 H1050" stroke="#38bdf8" stroke-width="5" stroke-linecap="round" opacity="0.75"/>
+  <path d="M1040 352 L1055 365 L1040 378" fill="none" stroke="#38bdf8" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g filter="url(#shadow)">
+    <rect x="60" y="170" width="290" height="390" rx="26" fill="#0d2037" stroke="#1e4c70" stroke-width="2"/>
+    <circle cx="205" cy="242" r="46" fill="url(#cyan)"/>
+    <path d="M184 244 h-9 a17 17 0 0 1 0-34 h24 a17 17 0 0 1 0 34 h-5" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+    <path d="M216 230 h9 a17 17 0 0 1 0 34 h-24 a17 17 0 0 1 0-34 h5" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round"/>
+    <text x="205" y="325" text-anchor="middle" fill="#67e8f9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">01 · 交给 Agent</text>
+    <text x="205" y="372" text-anchor="middle" fill="#f8fafc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25" font-weight="700">发送仓库链接</text>
+    <text x="205" y="420" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">Agent 完整读取 SKILL.md</text>
+    <text x="205" y="452" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">自动了解规则和安全边界</text>
+    <rect x="104" y="490" width="202" height="38" rx="19" fill="#12334d"/>
+    <text x="205" y="515" text-anchor="middle" fill="#7dd3fc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16">此时不会删除任何内容</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="390" y="170" width="290" height="390" rx="26" fill="#0d2037" stroke="#1e4c70" stroke-width="2"/>
+    <circle cx="535" cy="242" r="46" fill="url(#cyan)"/>
+    <circle cx="526" cy="234" r="20" fill="none" stroke="#fff" stroke-width="6"/>
+    <path d="M542 250 L558 266" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+    <text x="535" y="325" text-anchor="middle" fill="#67e8f9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">02 · 只做扫描</text>
+    <text x="535" y="372" text-anchor="middle" fill="#f8fafc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25" font-weight="700">运行 Scan</text>
+    <text x="535" y="420" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">Confirmed：证据充分</text>
+    <text x="535" y="452" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">ReviewOnly：只报告不自动删</text>
+    <rect x="434" y="490" width="202" height="38" rx="19" fill="#12334d"/>
+    <text x="535" y="515" text-anchor="middle" fill="#7dd3fc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16">同时说明会保留什么</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="720" y="170" width="290" height="390" rx="26" fill="#0d2037" stroke="#1e4c70" stroke-width="2"/>
+    <circle cx="865" cy="242" r="46" fill="url(#cyan)"/>
+    <rect x="840" y="217" width="50" height="50" rx="9" fill="none" stroke="#fff" stroke-width="6"/>
+    <path d="M850 242 L861 253 L881 231" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="865" y="325" text-anchor="middle" fill="#67e8f9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">03 · 人工确认</text>
+    <text x="865" y="372" text-anchor="middle" fill="#f8fafc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25" font-weight="700">你来决定是否删除</text>
+    <text x="865" y="420" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">先看目标、理由和风险</text>
+    <text x="865" y="452" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">明确批准后才允许 Remove</text>
+    <rect x="764" y="490" width="202" height="38" rx="19" fill="#3b2b16"/>
+    <text x="865" y="515" text-anchor="middle" fill="#fbbf24" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16">浏览器资料需单独批准</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1050" y="170" width="330" height="390" rx="26" fill="#0d2037" stroke="#236044" stroke-width="2"/>
+    <circle cx="1215" cy="242" r="46" fill="#16a34a"/>
+    <path d="M1215 211 L1246 224 V245 C1246 267 1233 279 1215 287 C1197 279 1184 267 1184 245 V224 Z" fill="none" stroke="#fff" stroke-width="6" stroke-linejoin="round"/>
+    <path d="M1198 247 L1209 258 L1232 234" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1215" y="325" text-anchor="middle" fill="#86efac" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">04 · 删除并验证</text>
+    <text x="1215" y="372" text-anchor="middle" fill="#f8fafc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25" font-weight="700">Remove → Verify</text>
+    <text x="1215" y="420" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">生成逐项 Actions 和 Summary</text>
+    <text x="1215" y="452" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">重启后再次确认是否复发</text>
+    <rect x="1104" y="490" width="222" height="38" rx="19" fill="#143b2c"/>
+    <text x="1215" y="515" text-anchor="middle" fill="#86efac" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16">最后输出完整清理账单</text>
+  </g>
+
+  <rect x="250" y="612" width="940" height="64" rx="22" fill="#111f31" stroke="#f59e0b" stroke-opacity="0.55"/>
+  <circle cx="292" cy="644" r="17" fill="#f59e0b"/>
+  <path d="M292 633 V647" stroke="#111827" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="292" cy="655" r="2.7" fill="#111827"/>
+  <text x="330" y="652" fill="#fde68a" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="21" font-weight="600">任何一步证据不足 → 保持 ReviewOnly，不扩大路径、不强制删除</text>
+</svg>
