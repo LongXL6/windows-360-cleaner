@@ -158,6 +158,7 @@ function New-Fake360CleanupRuntimeProvider {
     param(
         [string[]]$ExistingRegistryPaths = @(),
         [string[]]$ProductEvidencePaths = @(),
+        [string[]]$TrustedDuohuiVendorPaths = @(),
         [hashtable]$RegistrySubKeys = @{},
         [hashtable]$RegistryValues = @{},
         [hashtable]$PathItems = @{},
@@ -169,8 +170,18 @@ function New-Fake360CleanupRuntimeProvider {
         [AllowEmptyCollection()][object[]]$Services = @(),
         [AllowEmptyCollection()][object[]]$Processes = @(),
         [bool]$IsAdministrator = $false,
-        [int]$ElevatedExitCode = 0
+        [int]$ElevatedExitCode = 0,
+        [AllowNull()][object]$VendorUninstallerResult = $null,
+        [AllowNull()][scriptblock]$BeforeVendorUninstallerStart = $null
     )
+
+    if ($null -eq $VendorUninstallerResult) {
+        $VendorUninstallerResult = [pscustomobject]@{
+            Result   = 'Success'
+            ExitCode = 0
+            Detail   = 'Fake vendor uninstaller completed.'
+        }
+    }
 
     $calls = New-Object System.Collections.ArrayList
     $registryPaths = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
@@ -179,11 +190,14 @@ function New-Fake360CleanupRuntimeProvider {
     foreach ($path in $RegistryValues.Keys) { [void]$registryPaths.Add([string]$path) }
     $productEvidence = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
     foreach ($path in $ProductEvidencePaths) { [void]$productEvidence.Add($path) }
+    $trustedDuohuiVendors = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in $TrustedDuohuiVendorPaths) { [void]$trustedDuohuiVendors.Add($path) }
 
     $context = [pscustomobject]@{
         Calls                 = $calls
         RegistryPaths         = $registryPaths
         ProductEvidencePaths  = $productEvidence
+        TrustedDuohuiVendorPaths = $trustedDuohuiVendors
         RegistrySubKeysByPath = $RegistrySubKeys
         RegistryValuesByPath  = $RegistryValues
         PathItemsByPath       = $PathItems
@@ -196,6 +210,9 @@ function New-Fake360CleanupRuntimeProvider {
         ProcessItems          = @($Processes)
         AdministratorResult   = $IsAdministrator
         ElevatedExitCode      = $ElevatedExitCode
+        VendorUninstallerResult = $VendorUninstallerResult
+        BeforeVendorUninstallerStart = $BeforeVendorUninstallerStart
+        VendorUninstallerStartedCallbacks = 0
     }
 
     $provider = @{
@@ -206,6 +223,14 @@ function New-Fake360CleanupRuntimeProvider {
                 Arguments = @($Path)
             })
             return $Context.ProductEvidencePaths.Contains($Path)
+        }
+        IsTrustedDuohuiVendorFile = {
+            param($Context, [string]$Path)
+            [void]$Context.Calls.Add([pscustomobject]@{
+                Operation = 'IsTrustedDuohuiVendorFile'
+                Arguments = @($Path)
+            })
+            return $Context.TrustedDuohuiVendorPaths.Contains($Path)
         }
         PathItem = {
             param($Context, [string]$Path)
@@ -298,7 +323,10 @@ function New-Fake360CleanupRuntimeProvider {
                 Arguments = @($Path)
             })
             if ($Context.RegistryValuesByPath.ContainsKey($Path)) {
-                return $Context.RegistryValuesByPath[$Path]
+                $behavior = $Context.RegistryValuesByPath[$Path]
+                if ($behavior -is [scriptblock]) { return (& $behavior $Context $Path) }
+                if ($behavior -is [Exception]) { throw $behavior }
+                return $behavior
             }
             return $null
         }
@@ -341,6 +369,26 @@ function New-Fake360CleanupRuntimeProvider {
                 Arguments = @($FilePath, $ArgumentLine)
             })
             return [pscustomobject]@{ ExitCode = $Context.ElevatedExitCode }
+        }
+        StartVendorUninstaller = {
+            param(
+                $Context,
+                [string]$FilePath,
+                [string]$ArgumentLine,
+                [int]$TimeoutMilliseconds,
+                [scriptblock]$OnStarted
+            )
+            [void]$Context.Calls.Add([pscustomobject]@{
+                Operation = 'StartVendorUninstaller'
+                Arguments = @($FilePath, $ArgumentLine, $TimeoutMilliseconds)
+            })
+            if ($null -ne $Context.BeforeVendorUninstallerStart) {
+                $beforeStart = $Context.BeforeVendorUninstallerStart
+                & $beforeStart $Context $FilePath $ArgumentLine $TimeoutMilliseconds
+            }
+            & $OnStarted
+            $Context.VendorUninstallerStartedCallbacks++
+            return $Context.VendorUninstallerResult
         }
         StopProcess = {
             param($Context, [int]$ProcessId, [string]$ExpectedExecutable)

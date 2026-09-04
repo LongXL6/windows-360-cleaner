@@ -23,6 +23,8 @@ Installed-product names and publishers commonly include:
 
 Prefer a working vendor uninstaller. Remove an orphan uninstall record only after its install location and uninstall command have been inspected.
 
+The observed Duohui 1.0.234.0 record uses the literal key name, `DisplayName`, and `Publisher` value `duohuipingbao`. Match that exact identity; do not broaden it to arbitrary names containing `duohui`. When an evidenced `%LOCALAPPDATA%\dhpingbao` contains an evidenced `huabaosetup.exe`, expose the exact file and its SHA-256 as a separate approved vendor-uninstaller action only when Authenticode is valid and the signer simple name is exactly `Beijing Qihu Technology Co., Ltd.`. Any other signer stays `ReviewOnly`. The only supported argument is the built-in literal `/uninstall:byUserName`; never execute an arbitrary uninstall command copied from the registry.
+
 ## Exact current-user paths
 
 These are strong candidates. Payload paths should contain the expected marker shown in parentheses where specified.
@@ -93,6 +95,7 @@ Root-level Qihu-signed DLLs can confirm only those exact DLL files. They do not 
 - Scheduled tasks named `SoftMgrUpdate*` whose actions point to a confirmed SoftMgr subtree.
 - Service `WinToolBoxUpdateSrv` with the exact validated updater path described above.
 - Screen-saver value `SCRNSAVE.EXE` pointing into a confirmed Huabao/duohuipingbao directory.
+- Duohui leftovers can include `HKCU\Software\duohuipingbao` and a `duohuipingbao` child below a GUID-shaped direct child of `HKCU\Software`. Keep them `ReviewOnly` while the exact product record is live; they become removable only when that exact record is proven orphaned. Never wildcard-delete GUID parents.
 
 Remove persistence only when both the entry and a confirmed target match. A Run/RunOnce name or executable containing `360`, `SoftMgr`, `huabao`, `duohuipingbao`, or `sesvc` remains `ReviewOnly` when the executable is outside confirmed targets.
 

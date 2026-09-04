@@ -59,11 +59,16 @@ try {
             -Target 'HKCU:\Software\Fixture\Run' -Confidence 'ReviewOnly' `
             -Reason 'Isolated fixture' -ValueName 'FixtureValue'
         Assert-TestSequenceEqual `
-            -Expected @('Kind', 'Name', 'Target', 'Confidence', 'Reason', 'RemovalType', 'ValueName', 'Offline') `
+            -Expected @(
+                'Kind', 'Name', 'Target', 'Confidence', 'Reason', 'RemovalType',
+                'ValueName', 'IdentityFingerprint', 'Offline'
+            ) `
             -Actual @($finding.PSObject.Properties.Name) `
             -Message 'Finding schema changed unexpectedly.'
         Assert-TestEqual -Expected 'None' -Actual $finding.RemovalType `
             -Message 'Review-only findings must default to a non-removing action.'
+        Assert-TestEqual -Expected '' -Actual $finding.IdentityFingerprint `
+            -Message 'Findings without a captured exact identity must default to an empty fingerprint.'
         Assert-TestFalse -Condition $finding.Offline -Message 'Live findings must not be marked offline by default.'
 
         $items = New-Object System.Collections.ArrayList
@@ -395,6 +400,8 @@ try {
         $liveIconKey = $uninstallRoot + '\LiveIcon'
         $missingOnlyKey = $uninstallRoot + '\MissingOnly'
         $liveQuietKey = $uninstallRoot + '\LiveQuietUninstaller'
+        $unreadableIdentityKey = $uninstallRoot + '\UnreadableIdentity'
+        $unreadableIdentityChild = $unreadableIdentityKey + '\Child'
         $missingLocation = Join-Path $fixtureRoot 'MissingProduct'
         $missingUninstaller = Join-Path $fixtureRoot 'Missing\uninstall.exe'
         $registryValues = @{
@@ -440,12 +447,23 @@ try {
                 UninstallString = ('"{0}" /S' -f $missingUninstaller)
                 QuietUninstallString = ('"{0}" /quiet' -f $liveUninstaller)
             }
+            $unreadableIdentityKey = [pscustomobject]@{
+                DisplayName = '360 Total Security Unreadable Identity'
+                InstallLocation = $missingLocation
+                UninstallString = ('"{0}" /S' -f $missingUninstaller)
+            }
         }
         $subKeys = @($registryValues.Keys | Sort-Object | ForEach-Object {
             [pscustomobject]@{ PSPath = $_ }
         })
+        $registrySubKeys = @{
+            $uninstallRoot = $subKeys
+            $unreadableIdentityKey = @([pscustomobject]@{
+                PSPath = $unreadableIdentityChild; PSChildName = 'Child'
+            })
+        }
         $fake = New-Fake360CleanupRuntimeProvider `
-            -RegistrySubKeys @{ $uninstallRoot = $subKeys } `
+            -RegistrySubKeys $registrySubKeys `
             -RegistryValues $registryValues
 
         Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
@@ -482,6 +500,237 @@ try {
                 -Message "A record whose explicit file references are stale was not confirmed: $confirmedKey"
             Assert-TestEqual -Expected 'RegistryKey' -Actual $orphanedFinding[0].RemovalType `
                 -Message "A proven orphan uninstall record did not retain exact-key removal: $confirmedKey"
+            Assert-TestTrue -Condition ([string]$orphanedFinding[0].IdentityFingerprint -cmatch '^[0-9A-F]{64}$') `
+                -Message "A confirmed registry-key finding did not capture an uppercase identity fingerprint: $confirmedKey"
+            $rootSnapshotCalls = @(Get-Fake360CleanupCalls -Fake $fake -Operation 'RegistryValues' | Where-Object {
+                $_.Arguments[0] -eq $confirmedKey
+            })
+            Assert-TestEqual -Expected 1 -Actual $rootSnapshotCalls.Count `
+                -Message "Registry-key attribution and root fingerprinting did not share one snapshot: $confirmedKey"
+        }
+
+        $unreadableIdentityFinding = @($findings | Where-Object {
+            $_.Kind -eq 'InstalledProduct' -and $_.Target -eq $unreadableIdentityKey
+        })
+        Assert-TestEqual -Expected 1 -Actual $unreadableIdentityFinding.Count `
+            -Message 'The unreadable identity fixture was not surfaced exactly once.'
+        Assert-TestEqual -Expected 'ReviewOnly' -Actual $unreadableIdentityFinding[0].Confidence `
+            -Message 'An unreadable registry-key identity remained confirmed.'
+        Assert-TestEqual -Expected 'None' -Actual $unreadableIdentityFinding[0].RemovalType `
+            -Message 'An unreadable registry-key identity remained removable.'
+        Assert-TestEqual -Expected '' -Actual $unreadableIdentityFinding[0].IdentityFingerprint `
+            -Message 'An unreadable registry-key identity retained an approval fingerprint.'
+        Assert-TestTrue -Condition ([string]$unreadableIdentityFinding[0].Reason -match '(?i)identity fingerprint') `
+            -Message 'The identity-read failure was not explained in the review-only finding.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'exact Duohui root emits one metadata-bound hashed vendor uninstaller' -Test {
+        $installRoot = Join-Path $script:KnownFolders.LocalAppData 'dhpingbao'
+        $vendorPath = Join-Path $installRoot 'huabaosetup.exe'
+        $tempVendor = Join-Path $script:KnownFolders.Temp 'duohuipingbao\huabaosetup.exe'
+        $outsideVendor = Join-Path $script:KnownFolders.LocalAppData 'OtherProduct\huabaosetup.exe'
+        foreach ($path in @($vendorPath, $tempVendor, $outsideVendor)) {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+            Set-Content -LiteralPath $path -Value ('ISOLATED-DUOHUI-' + (Split-Path -Parent $path))
+        }
+        $expectedHash = (Get-FileHash -LiteralPath $vendorPath -Algorithm SHA256).Hash
+        $fake = New-Fake360CleanupRuntimeProvider -UseRealPathReads `
+            -ProductEvidencePaths @($vendorPath, $tempVendor, $outsideVendor) `
+            -TrustedDuohuiVendorPaths @($vendorPath)
+
+        Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+        try {
+            $findings = @(Get-360Findings)
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+
+        $rootFinding = @($findings | Where-Object {
+            $_.Kind -eq 'Path' -and $_.Target -eq (Get-NormalPath $installRoot)
+        })
+        Assert-TestEqual -Expected 1 -Actual $rootFinding.Count `
+            -Message 'The exact dhpingbao root was not surfaced exactly once.'
+        Assert-TestEqual -Expected 'Confirmed' -Actual $rootFinding[0].Confidence `
+            -Message 'The exact dhpingbao root with Duohui metadata was not confirmed.'
+
+        $vendorFinding = @($findings | Where-Object { $_.Kind -eq 'VendorUninstaller' })
+        Assert-TestEqual -Expected 1 -Actual $vendorFinding.Count `
+            -Message 'The detector emitted a missing or extra vendor-uninstaller finding.'
+        Assert-TestEqual -Expected 'Duohui vendor uninstaller' -Actual $vendorFinding[0].Name `
+            -Message 'The vendor-uninstaller finding name changed unexpectedly.'
+        Assert-TestEqual -Expected (Get-NormalPath $vendorPath) -Actual $vendorFinding[0].Target `
+            -Message 'A Temp or root-outside huabaosetup.exe became the vendor target.'
+        Assert-TestEqual -Expected 'Confirmed' -Actual $vendorFinding[0].Confidence `
+            -Message 'The exact metadata-backed vendor uninstaller was not confirmed.'
+        Assert-TestEqual -Expected 'VendorUninstaller' -Actual $vendorFinding[0].RemovalType `
+            -Message 'The exact vendor uninstaller did not retain its dedicated removal type.'
+        Assert-TestEqual -Expected $expectedHash -Actual $vendorFinding[0].ValueName `
+            -Message 'The vendor finding did not bind approval to the scanned SHA-256.'
+        Assert-TestTrue -Condition ($vendorFinding[0].ValueName -cmatch '^[0-9A-F]{64}$') `
+            -Message 'The vendor SHA-256 must be 64 uppercase hexadecimal characters.'
+        Assert-TestTrue -Condition ([string]$vendorFinding[0].Reason).Contains($expectedHash) `
+            -Message 'The vendor finding reason did not expose the complete scanned SHA-256.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'metadata without the exact trusted signer stays review only' -Test {
+        $installRoot = Join-Path $script:KnownFolders.LocalAppData 'dhpingbao'
+        $vendorPath = Join-Path $installRoot 'huabaosetup.exe'
+        $fake = New-Fake360CleanupRuntimeProvider -UseRealPathReads `
+            -ProductEvidencePaths @($vendorPath)
+
+        Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+        try {
+            $findings = @(Get-360Findings)
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+
+        $vendorFinding = @($findings | Where-Object {
+            $_.Kind -eq 'VendorUninstaller' -and $_.Target -eq (Get-NormalPath $vendorPath)
+        })
+        Assert-TestEqual -Expected 1 -Actual $vendorFinding.Count `
+            -Message 'The exact untrusted vendor candidate disappeared from review output.'
+        Assert-TestEqual -Expected 'ReviewOnly' -Actual $vendorFinding[0].Confidence `
+            -Message 'Forgeable product metadata promoted an untrusted LocalAppData executable.'
+        Assert-TestEqual -Expected 'None' -Actual $vendorFinding[0].RemovalType `
+            -Message 'An untrusted LocalAppData executable became runnable.'
+        Assert-TestEqual -Expected '' -Actual $vendorFinding[0].ValueName `
+            -Message 'An untrusted LocalAppData executable was hashed into an approval identity.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'Duohui uninstall records require exact key display name and publisher' -Test {
+        $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+        $installRoot = Join-Path $script:KnownFolders.LocalAppData 'dhpingbao'
+        $vendorPath = Join-Path $installRoot 'huabaosetup.exe'
+        $scenarios = @(
+            [pscustomobject]@{ Leaf = 'duohuipingbao'; DisplayName = 'DUOHUIPINGBAO'; Publisher = 'DuohuiPingbao'; Expected = 1 },
+            [pscustomobject]@{ Leaf = 'duohuipingbao-helper'; DisplayName = 'duohuipingbao'; Publisher = 'duohuipingbao'; Expected = 0 },
+            [pscustomobject]@{ Leaf = 'duohuipingbao'; DisplayName = 'duohuipingbao helper'; Publisher = 'duohuipingbao'; Expected = 0 },
+            [pscustomobject]@{ Leaf = 'duohuipingbao'; DisplayName = 'duohuipingbao'; Publisher = 'duohuipingbao helper'; Expected = 0 }
+        )
+
+        foreach ($scenario in $scenarios) {
+            $keyPath = $uninstallRoot + '\' + $scenario.Leaf
+            $fake = New-Fake360CleanupRuntimeProvider `
+                -RegistrySubKeys @{
+                    $uninstallRoot = @([pscustomobject]@{ PSPath = $keyPath; PSChildName = $scenario.Leaf })
+                } `
+                -RegistryValues @{
+                    $keyPath = [pscustomobject]@{
+                        DisplayName = $scenario.DisplayName
+                        Publisher = $scenario.Publisher
+                        InstallLocation = $installRoot
+                        UninstallString = ('"{0}" /registry-supplied-argument' -f $vendorPath)
+                    }
+                } `
+                -ProductEvidencePaths @($vendorPath)
+
+            Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+            try {
+                $findings = @(Get-360Findings)
+            }
+            finally {
+                Reset-360CleanupRuntimeProvider
+            }
+
+            $installedProduct = @($findings | Where-Object {
+                $_.Kind -eq 'InstalledProduct' -and $_.Target -eq $keyPath
+            })
+            Assert-TestEqual -Expected $scenario.Expected -Actual $installedProduct.Count `
+                -Message ('The exact Duohui uninstall identity boundary failed for: ' + $keyPath)
+            if ($scenario.Expected -eq 1) {
+                Assert-TestEqual -Expected 'ReviewOnly' -Actual $installedProduct[0].Confidence `
+                    -Message 'A live exact Duohui uninstall record must not be removed as an orphan.'
+                Assert-TestEqual -Expected 'None' -Actual $installedProduct[0].RemovalType `
+                    -Message 'A live exact Duohui uninstall record became directly removable.'
+            }
+        }
+    }
+
+    Invoke-TestCase -Run $run -Name 'Duohui HKCU residues are removable only with a proven orphan record' -Test {
+        $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+        $uninstallKey = $uninstallRoot + '\duohuipingbao'
+        $softwareRoot = 'HKCU:\Software'
+        $directResidue = $softwareRoot + '\duohuipingbao'
+        $guidParent = $softwareRoot + '\{01234567-89AB-CDEF-0123-456789ABCDEF}'
+        $guidResidue = $guidParent + '\duohuipingbao'
+        $nearParent = $softwareRoot + '\{01234567-89AB-CDEF-0123-NOT-A-GUID}'
+        $nearResidue = $nearParent + '\duohuipingbao'
+        $softwareSubKeys = @(
+            [pscustomobject]@{ PSPath = $guidParent; PSChildName = '{01234567-89AB-CDEF-0123-456789ABCDEF}' },
+            [pscustomobject]@{ PSPath = $nearParent; PSChildName = '{01234567-89AB-CDEF-0123-NOT-A-GUID}' }
+        )
+        $residuePaths = @($directResidue, $guidResidue, $nearResidue)
+        $missingRoot = Join-Path $fixtureRoot 'MissingDuohui'
+        $missingVendor = Join-Path $missingRoot 'huabaosetup.exe'
+
+        $recordStates = @(
+            [pscustomobject]@{
+                Name = 'Orphan'; IncludeRecord = $true; ExpectedConfidence = 'Confirmed'; ExpectedRemoval = 'RegistryKey'
+                InstallLocation = $missingRoot; UninstallString = ('"{0}" /uninstall:byUserName' -f $missingVendor)
+            },
+            [pscustomobject]@{
+                Name = 'Live'; IncludeRecord = $true; ExpectedConfidence = 'ReviewOnly'; ExpectedRemoval = 'None'
+                InstallLocation = (Join-Path $script:KnownFolders.LocalAppData 'dhpingbao')
+                UninstallString = ('"{0}" /uninstall:byUserName' -f (Join-Path $script:KnownFolders.LocalAppData 'dhpingbao\huabaosetup.exe'))
+            },
+            [pscustomobject]@{
+                Name = 'NoRecord'; IncludeRecord = $false; ExpectedConfidence = 'ReviewOnly'; ExpectedRemoval = 'None'
+                InstallLocation = ''; UninstallString = ''
+            }
+        )
+
+        foreach ($recordState in $recordStates) {
+            $registrySubKeys = @{ $softwareRoot = $softwareSubKeys }
+            $registryValues = @{}
+            $registryValues[$directResidue] = [pscustomobject]@{}
+            $registryValues[$guidResidue] = [pscustomobject]@{}
+            if ($recordState.IncludeRecord) {
+                $registrySubKeys[$uninstallRoot] = @(
+                    [pscustomobject]@{ PSPath = $uninstallKey; PSChildName = 'duohuipingbao' }
+                )
+                $registryValues[$uninstallKey] = [pscustomobject]@{
+                    DisplayName = 'duohuipingbao'
+                    Publisher = 'duohuipingbao'
+                    InstallLocation = $recordState.InstallLocation
+                    UninstallString = $recordState.UninstallString
+                }
+            }
+            $fake = New-Fake360CleanupRuntimeProvider -ExistingRegistryPaths $residuePaths `
+                -RegistrySubKeys $registrySubKeys -RegistryValues $registryValues `
+                -ProductEvidencePaths @((Join-Path $script:KnownFolders.LocalAppData 'dhpingbao\huabaosetup.exe'))
+
+            Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+            try {
+                $findings = @(Get-360Findings)
+            }
+            finally {
+                Reset-360CleanupRuntimeProvider
+            }
+
+            $residueFindings = @($findings | Where-Object { $_.Kind -eq 'RegistryResidue' } | Sort-Object Target)
+            Assert-TestEqual -Expected 2 -Actual $residueFindings.Count `
+                -Message ("The {0} scan emitted a missing residue or accepted a non-GUID parent." -f $recordState.Name)
+            Assert-TestSequenceEqual -Expected @(@($directResidue, $guidResidue) | Sort-Object) `
+                -Actual @($residueFindings.Target) `
+                -Message ("The {0} scan returned the wrong exact HKCU residues." -f $recordState.Name)
+            foreach ($residueFinding in $residueFindings) {
+                Assert-TestEqual -Expected $recordState.ExpectedConfidence -Actual $residueFinding.Confidence `
+                    -Message ("The {0} residue confidence did not respect the orphan gate." -f $recordState.Name)
+                Assert-TestEqual -Expected $recordState.ExpectedRemoval -Actual $residueFinding.RemovalType `
+                    -Message ("The {0} residue removal type did not respect the orphan gate." -f $recordState.Name)
+                if ($recordState.ExpectedRemoval -eq 'RegistryKey') {
+                    Assert-TestTrue `
+                        -Condition ([string]$residueFinding.IdentityFingerprint -cmatch '^[0-9A-F]{64}$') `
+                        -Message 'A confirmed Duohui registry residue lacked its exact identity fingerprint.'
+                }
+                else {
+                    Assert-TestEqual -Expected '' -Actual $residueFinding.IdentityFingerprint `
+                        -Message 'A review-only Duohui registry residue retained a removal fingerprint.'
+                }
+            }
         }
     }
 
@@ -599,13 +848,24 @@ try {
             ProcessId      = 4242
             ExecutablePath = $executable
         }
+        $task = [pscustomobject]@{
+            TaskName = 'FixtureDuohuiTask'
+            TaskPath = '\Fixture\'
+            Actions  = @([pscustomobject]@{
+                Execute = $executable; Arguments = '--background'; WorkingDirectory = $confirmedRoot
+            })
+        }
+        $service = [pscustomobject]@{
+            Name = 'FixtureDuohuiService'; PathName = ('"{0}" --service' -f $executable)
+            StartName = 'LocalSystem'; ServiceType = 'Own Process'; StartMode = 'Auto'
+        }
         $fake = New-Fake360CleanupRuntimeProvider `
             -RegistryValues @{
                 $runRoot = [pscustomobject]@{
                     FixtureStartup = ('"{0}" --background' -f $executable)
                 }
             } `
-            -Processes @($process)
+            -ScheduledTasks @($task) -Services @($service) -Processes @($process)
 
         Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
         try {
@@ -624,6 +884,32 @@ try {
             -Message 'A Run executable under a confirmed fixture root was not confirmed.'
         Assert-TestEqual -Expected 'RegistryValue' -Actual $startupFinding[0].RemovalType `
             -Message 'The fake Run value did not preserve its removal type.'
+        Assert-TestTrue -Condition ([string]$startupFinding[0].IdentityFingerprint -cmatch '^[0-9A-F]{64}$') `
+            -Message 'A confirmed registry value did not capture an uppercase identity fingerprint.'
+
+        $taskFinding = @($findings | Where-Object {
+            $_.Kind -eq 'ScheduledTask' -and $_.Target -eq $task.TaskName
+        })
+        Assert-TestEqual -Expected 1 -Actual $taskFinding.Count `
+            -Message 'The confirmed fake task was not surfaced exactly once.'
+        Assert-TestEqual -Expected 'Confirmed' -Actual $taskFinding[0].Confidence `
+            -Message 'A task under a confirmed fixture root was not confirmed.'
+        Assert-TestEqual -Expected 'Task' -Actual $taskFinding[0].RemovalType `
+            -Message 'The confirmed fake task did not preserve its removal type.'
+        Assert-TestTrue -Condition ([string]$taskFinding[0].IdentityFingerprint -cmatch '^[0-9A-F]{64}$') `
+            -Message 'A confirmed task did not capture an uppercase identity fingerprint.'
+
+        $serviceFinding = @($findings | Where-Object {
+            $_.Kind -eq 'Service' -and $_.Target -eq $service.Name
+        })
+        Assert-TestEqual -Expected 1 -Actual $serviceFinding.Count `
+            -Message 'The confirmed fake service was not surfaced exactly once.'
+        Assert-TestEqual -Expected 'Confirmed' -Actual $serviceFinding[0].Confidence `
+            -Message 'A service under a confirmed fixture root was not confirmed.'
+        Assert-TestEqual -Expected 'Service' -Actual $serviceFinding[0].RemovalType `
+            -Message 'The confirmed fake service did not preserve its removal type.'
+        Assert-TestTrue -Condition ([string]$serviceFinding[0].IdentityFingerprint -cmatch '^[0-9A-F]{64}$') `
+            -Message 'A confirmed service did not capture an uppercase identity fingerprint.'
 
         $processFinding = @($findings | Where-Object {
             $_.Kind -eq 'Process' -and $_.Target -eq '4242'
@@ -639,10 +925,82 @@ try {
             $_.Arguments[0] -eq $runRoot
         })
         Assert-TestEqual -Expected 1 -Actual $runValueCalls.Count `
-            -Message 'The configured Run root must be read once.'
+            -Message 'The configured Run root attribution and identity must use one provider snapshot.'
+        foreach ($operation in @('ScheduledTasks', 'Services')) {
+            $identityCalls = @(Get-Fake360CleanupCalls -Fake $fake -Operation $operation)
+            Assert-TestEqual -Expected 1 -Actual $identityCalls.Count `
+                -Message ("The {0} attribution and identity must use one provider snapshot." -f $operation)
+        }
         $processCalls = @(Get-Fake360CleanupCalls -Fake $fake -Operation 'Processes')
         Assert-TestEqual -Expected 1 -Actual $processCalls.Count `
             -Message 'The process provider operation must be called once per scan.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'startup attribution and fingerprint come from one registry snapshot' -Test {
+        $confirmedRoot = Join-Path $script:KnownFolders.Temp 'duohuipingbao'
+        New-Item -ItemType Directory -Path $confirmedRoot -Force | Out-Null
+        $originalExecutable = Join-Path $confirmedRoot 'duohuipingbao.exe'
+        Set-Content -LiteralPath $originalExecutable -Value 'ISOLATED-RACE-MARKER'
+        Set-Content -LiteralPath (Join-Path $confirmedRoot 'huabaosetup.exe') `
+            -Value 'ISOLATED-RACE-MARKER'
+
+        $runRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+        $firstSnapshot = [pscustomobject]@{
+            FixtureRacingStartup = ('"{0}" --original' -f $originalExecutable)
+        }
+        $replacementSnapshot = [pscustomobject]@{
+            FixtureRacingStartup = 'C:\UnrelatedFixture\replacement.exe --changed'
+        }
+        $firstProperty = $firstSnapshot.PSObject.Properties['FixtureRacingStartup']
+        $firstToken = Join-360CleanupStableFields @(
+            [string]$firstProperty.Name,
+            [string]$firstProperty.TypeNameOfValue,
+            (ConvertTo-360CleanupStableValue $firstProperty.Value)
+        )
+        $expectedFingerprint = Get-360CleanupTextSha256 $firstToken
+        $replacementProperty = $replacementSnapshot.PSObject.Properties['FixtureRacingStartup']
+        $replacementToken = Join-360CleanupStableFields @(
+            [string]$replacementProperty.Name,
+            [string]$replacementProperty.TypeNameOfValue,
+            (ConvertTo-360CleanupStableValue $replacementProperty.Value)
+        )
+        $replacementFingerprint = Get-360CleanupTextSha256 $replacementToken
+        $registryBehavior = {
+            param($Context, $Path)
+            $Context.RacingRegistryReads++
+            if ($Context.RacingRegistryReads -eq 1) { return $firstSnapshot }
+            return $replacementSnapshot
+        }.GetNewClosure()
+        $registryValues = @{}
+        $registryValues[$runRoot] = $registryBehavior
+        $fake = New-Fake360CleanupRuntimeProvider -RegistryValues $registryValues
+        $fake.Context | Add-Member -MemberType NoteProperty -Name RacingRegistryReads -Value 0
+
+        Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+        try {
+            $findings = @(Get-360Findings)
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+
+        $finding = @($findings | Where-Object {
+            $_.Kind -eq 'Startup' -and $_.Target -eq $runRoot -and
+            $_.ValueName -eq 'FixtureRacingStartup'
+        })
+        Assert-TestEqual -Expected 1 -Actual $finding.Count `
+            -Message 'The racing startup fixture was not surfaced exactly once.'
+        Assert-TestEqual -Expected 'Confirmed' -Actual $finding[0].Confidence `
+            -Message 'The original confirmed startup snapshot was unexpectedly downgraded.'
+        Assert-TestEqual -Expected $expectedFingerprint -Actual $finding[0].IdentityFingerprint `
+            -Message 'The startup fingerprint did not describe the same snapshot used for attribution.'
+        Assert-TestFalse -Condition ($finding[0].IdentityFingerprint -eq $replacementFingerprint) `
+            -Message 'A later replacement identity was combined with earlier confirmed attribution.'
+        $runValueCalls = @(Get-Fake360CleanupCalls -Fake $fake -Operation 'RegistryValues' | Where-Object {
+            $_.Arguments[0] -eq $runRoot
+        })
+        Assert-TestEqual -Expected 1 -Actual $runValueCalls.Count `
+            -Message 'Startup attribution and fingerprinting performed separate provider reads.'
     }
 
     Complete-TestRun -Run $run

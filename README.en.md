@@ -33,7 +33,7 @@ Treat https://github.com/LongXL6/windows-360-cleaner as an AI skill package, not
 Read the complete SKILL.md first and follow every safety boundary. Read references only when evidence or troubleshooting requires them.
 Run Scan only. Explain Confirmed, ReviewOnly, preserved normal files, and preserved browser data. Stop and wait for my explicit approval before running Remove.
 Never expand the allowlist, broadly delete paths containing 360, or remove files from an offline Windows installation.
-After approved removal, retain the Remove JSON Summary, run Verify, and count remaining Confirmed findings from the Verify JSON Findings.
+After approved removal, retain the Remove JSON Summary. Treat its Findings as immediate remaining state only when `ImmediateRescanComplete` is true. Then run Verify and count remaining Confirmed findings from the Verify JSON Findings.
 In the final answer, include every metric required by SKILL.md, even when its value is zero. Describe LogicalBytesRemoved as logical file size, not guaranteed freed disk space.
 ```
 
@@ -79,6 +79,8 @@ The core rule is simple: **an agent may scan and explain automatically, but it m
 | Access denied is not success | Default removal skips only the exact path that cannot be fully inspected, continues other approved targets, and reports that attention is still required |
 | Browser data protected | Profiles require a separate backup and explicit opt-in |
 | Normal apps protected | Loading a target DLL does not automatically authorize force-stopping an unrelated application |
+| Vendor uninstaller is identity-bound | Duohui's supported uninstaller requires a valid exact Qihoo Authenticode signer, approved exact path and SHA-256, and one built-in argument; registry command lines are never executed blindly |
+| Same-name replacement protected | Stable fingerprints for approved services, tasks, registry values, and registry-key trees are rechecked before mutation; changed or unreadable identities require a fresh Scan approval |
 | Offline Windows is scan-only | No cross-system removal mode exists |
 | Reports cannot overwrite | JSON reports are created as new files and omit computer/user identity by default |
 
@@ -161,7 +163,7 @@ Remove can enable browser-profile deletion only when the approved Scan report us
 
 ## Result reporting
 
-The Remove report's `Summary` measures the approved/current intersection and changes since approval, plus removed objects, files, directories, logical bytes, services, tasks, registry entries, processes, failures, pending actions, retries, and unresolved targets. Path totals are deduplicated before/after snapshots. Logical file size is not guaranteed freed disk space because hard links, sparse files, and compression can differ. The final post-restart result comes from Verify report `Findings`.
+The Remove report's `Summary` measures the approved/current intersection and changes since approval, plus removed objects, files, directories, logical bytes, services, tasks, registry entries, processes, vendor-uninstaller outcomes, failures, pending actions, retries, and unresolved targets. It also records `PostVendorMutationBlocked` and `ImmediateRescanComplete`. Path totals are deduplicated before/after snapshots. Logical file size is not guaranteed freed disk space because hard links, sparse files, and compression can differ. If the immediate rescan is incomplete, the report Findings are only the last safe pre-mutation snapshot, current remaining state is unknown, and the run requires attention. The final post-restart result comes from Verify report `Findings`.
 
 ## Validate the skill package
 
