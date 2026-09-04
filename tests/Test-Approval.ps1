@@ -624,7 +624,7 @@ try {
             -Findings @($snapshotFinding) -ApprovedReportHash $approvedHash -OutcomeRunId $runId)
 
         $renderedItems = @(Show-CleanupReportOutcome -Path $outcomePath `
-            -ExpectedApprovedReportHash $approvedHash -ExpectedOutcomeRunId $runId 6>&1)
+            -ExpectedApprovedReportHash $approvedHash -ExpectedOutcomeRunId $runId 3>&1 6>&1)
         $displayText = @($renderedItems | Where-Object {
             -not (@($_.PSObject.Properties.Name) -contains 'SchemaVersion' -and
                 @($_.PSObject.Properties.Name) -contains 'Mode')
