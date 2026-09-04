@@ -191,19 +191,68 @@ function Test-IsUnderPath {
         $candidatePath.StartsWith($rootPath + '\', [StringComparison]::OrdinalIgnoreCase)
 }
 
-function Get-CommandExecutable {
+function Get-CommandExecutableToken {
     param([string]$CommandLine)
 
     if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $null }
     $expanded = [Environment]::ExpandEnvironmentVariables($CommandLine.Trim())
     if ($expanded.StartsWith('"')) {
         $end = $expanded.IndexOf('"', 1)
-        if ($end -gt 1) { return Get-NormalPath $expanded.Substring(1, $end - 1) }
+        if ($end -gt 1) { return $expanded.Substring(1, $end - 1) }
     }
 
     $match = [regex]::Match($expanded, '^(.*?\.(?:exe|com|bat|cmd|scr|dll|sys))(?=\s|$)', 'IgnoreCase')
-    if ($match.Success) { return Get-NormalPath $match.Groups[1].Value }
+    if ($match.Success) { return $match.Groups[1].Value }
     return $null
+}
+
+function Get-CommandExecutable {
+    param([string]$CommandLine)
+
+    $executable = Get-CommandExecutableToken $CommandLine
+    if (-not $executable) { return $null }
+    return Get-NormalPath $executable
+}
+
+function Get-FileReferenceState {
+    param(
+        [string]$Value,
+        [switch]$CommandLine
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return 'Absent' }
+    $target = if ($CommandLine) { Get-CommandExecutableToken $Value } else { $Value }
+    if ([string]::IsNullOrWhiteSpace($target)) { return 'Unknown' }
+    if (-not [IO.Path]::IsPathRooted($target)) { return 'Unknown' }
+    $normalized = Get-NormalPath $target
+    if (-not $normalized) { return 'Unknown' }
+    try {
+        if (Test-Path -LiteralPath $normalized -ErrorAction Stop) { return 'Live' }
+        if ($normalized.StartsWith('\\')) { return 'Unknown' }
+        $pathRoot = [IO.Path]::GetPathRoot($normalized)
+        if ([string]::IsNullOrWhiteSpace($pathRoot) -or
+            -not (Test-Path -LiteralPath $pathRoot -ErrorAction Stop)) { return 'Unknown' }
+        return 'Stale'
+    }
+    catch {
+        return 'Unknown'
+    }
+}
+
+function Get-DisplayIconReferenceState {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return 'Absent' }
+    $expanded = [Environment]::ExpandEnvironmentVariables($Value.Trim())
+    if ($expanded.StartsWith('"')) {
+        $end = $expanded.IndexOf('"', 1)
+        if ($end -le 1) { return 'Unknown' }
+        $target = $expanded.Substring(1, $end - 1)
+    }
+    else {
+        $target = [regex]::Replace($expanded, ',\s*-?\d+\s*$', '').Trim()
+    }
+    return Get-FileReferenceState $target
 }
 
 function Get-PropertyValue {
@@ -513,8 +562,6 @@ function Get-360Findings {
         }
     }
 
-    $confirmedRoots = Get-ConfirmedPathRoots @($findings)
-
     $uninstallRoots = @(
         'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
         'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
@@ -530,19 +577,34 @@ function Get-360Findings {
             $knownPublisher = $publisher -match '(?i)360\.cn|360安全中心|Qihoo|Qihu|奇虎'
             if (-not ($knownProductName -or $knownPublisher)) { continue }
 
-            $location = Get-NormalPath ([string](Get-PropertyValue $properties 'InstallLocation'))
-            $underConfirmed = $false
-            foreach ($confirmedRoot in $confirmedRoots) {
-                if ($location -and (Test-IsUnderPath $location $confirmedRoot)) { $underConfirmed = $true; break }
+            $locationState = Get-FileReferenceState ([string](Get-PropertyValue $properties 'InstallLocation'))
+            $uninstallState = Get-FileReferenceState `
+                -Value ([string](Get-PropertyValue $properties 'UninstallString')) -CommandLine
+            $quietUninstallState = Get-FileReferenceState `
+                -Value ([string](Get-PropertyValue $properties 'QuietUninstallString')) -CommandLine
+            $displayIconState = Get-DisplayIconReferenceState `
+                ([string](Get-PropertyValue $properties 'DisplayIcon'))
+            $referenceStates = @($locationState, $uninstallState, $quietUninstallState)
+            $hasStaleReference = @($referenceStates | Where-Object { $_ -eq 'Stale' }).Count -gt 0
+            $hasBlockingReference = @($referenceStates | Where-Object { $_ -in @('Live', 'Unknown') }).Count -gt 0 -or
+                $displayIconState -in @('Live', 'Unknown')
+            $orphaned = $hasStaleReference -and -not $hasBlockingReference
+            $hasLiveUninstaller = $uninstallState -eq 'Live' -or $quietUninstallState -eq 'Live'
+            $reason = if ($orphaned) {
+                '360-family uninstall record has stale file references and no live install location or vendor uninstaller.'
             }
-            $orphaned = -not $location -or -not (Test-Path -LiteralPath $location)
-            $confirmedRecord = $orphaned -or $underConfirmed
-            $reason = if ($orphaned) { '360-family uninstall record points to a missing install location.' }
-                elseif ($underConfirmed) { 'Uninstall record points under a confirmed target path.' }
-                else { '360-family product record has a live install location; prefer its vendor uninstaller first.' }
+            elseif ($hasLiveUninstaller) {
+                '360-family product record has a live vendor uninstaller; run it before registry cleanup.'
+            }
+            elseif ($locationState -eq 'Live') {
+                '360-family product record has a live install location; inspect it and prefer its vendor uninstaller first.'
+            }
+            else {
+                'There is not enough evidence to prove this uninstall record is orphaned; inspect its file references before registry cleanup.'
+            }
             Add-Finding $findings (New-Finding -Kind 'InstalledProduct' -Name $displayName -Target $key.PSPath `
-                -Confidence $(if ($confirmedRecord) { 'Confirmed' } else { 'ReviewOnly' }) `
-                -Reason $reason -RemovalType $(if ($confirmedRecord) { 'RegistryKey' } else { 'None' }))
+                -Confidence $(if ($orphaned) { 'Confirmed' } else { 'ReviewOnly' }) `
+                -Reason $reason -RemovalType $(if ($orphaned) { 'RegistryKey' } else { 'None' }))
         }
     }
 
@@ -622,7 +684,8 @@ function Get-360Findings {
                 -Confidence 'Confirmed' -Reason 'Service executable is a confirmed target or confirmed mixed-bundle updater.' `
                 -RemovalType 'Service')
         }
-        elseif ($service.Name -match '(?i)360|SoftMgr|huabao|duohuipingbao' -or $service.PathName -match '(?i)\360|SoftMgr|huabao|duohuipingbao') {
+        elseif ($service.Name -match '(?i)360|SoftMgr|huabao|duohuipingbao' -or
+            ($executable -and $executable -match '(?i)(?:^|[\\/])360[^\\/]*(?:[\\/]|$)|SoftMgr|huabao|duohuipingbao')) {
             Add-Finding $findings (New-Finding -Kind 'Service' -Name $service.Name -Target $service.Name `
                 -Confidence 'ReviewOnly' -Reason 'Service name/path matched, but its executable was not under a confirmed target.')
         }

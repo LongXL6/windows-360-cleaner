@@ -91,6 +91,144 @@ try {
             -Message 'A command without an executable extension should not produce a path.'
     }
 
+    Invoke-TestCase -Run $run -Name 'uninstall records require positive stale evidence before registry removal' -Test {
+        $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+        $liveUninstaller = Join-Path $fixtureRoot 'Vendor\uninstall.exe'
+        $liveLocation = Join-Path $fixtureRoot 'LiveProduct'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $liveUninstaller) -Force | Out-Null
+        New-Item -ItemType Directory -Path $liveLocation -Force | Out-Null
+        Set-Content -LiteralPath $liveUninstaller -Value 'ISOLATED-UNINSTALLER'
+
+        $liveUninstallerKey = $uninstallRoot + '\LiveUninstaller'
+        $orphanedKey = $uninstallRoot + '\Orphaned'
+        $unknownKey = $uninstallRoot + '\Unknown'
+        $bareCommandKey = $uninstallRoot + '\BareCommand'
+        $liveLocationKey = $uninstallRoot + '\LiveLocation'
+        $liveIconKey = $uninstallRoot + '\LiveIcon'
+        $missingOnlyKey = $uninstallRoot + '\MissingOnly'
+        $liveQuietKey = $uninstallRoot + '\LiveQuietUninstaller'
+        $missingLocation = Join-Path $fixtureRoot 'MissingProduct'
+        $missingUninstaller = Join-Path $fixtureRoot 'Missing\uninstall.exe'
+        $registryValues = @{
+            $liveUninstallerKey = [pscustomobject]@{
+                DisplayName = '360 Total Security Live Uninstaller'
+                InstallLocation = ''
+                UninstallString = ('"{0}" /S' -f $liveUninstaller)
+            }
+            $orphanedKey = [pscustomobject]@{
+                DisplayName = '360 Total Security Orphaned'
+                InstallLocation = $missingLocation
+                UninstallString = ('"{0}" /S' -f $missingUninstaller)
+            }
+            $unknownKey = [pscustomobject]@{
+                DisplayName = '360 Total Security Unknown'
+                InstallLocation = ''
+                UninstallString = ''
+            }
+            $bareCommandKey = [pscustomobject]@{
+                DisplayName = '360 Total Security MSI'
+                InstallLocation = ''
+                UninstallString = 'MsiExec.exe /X{00000000-0000-0000-0000-000000000360}'
+            }
+            $liveLocationKey = [pscustomobject]@{
+                DisplayName = '360 Total Security Live Location'
+                InstallLocation = $liveLocation
+                UninstallString = ('"{0}" /S' -f $missingUninstaller)
+            }
+            $liveIconKey = [pscustomobject]@{
+                DisplayName = '360 Total Security Live Icon'
+                InstallLocation = $missingLocation
+                UninstallString = ('"{0}" /S' -f $missingUninstaller)
+                DisplayIcon = ('"{0}",0' -f $liveUninstaller)
+            }
+            $missingOnlyKey = [pscustomobject]@{
+                DisplayName = '360 Total Security Missing Uninstaller'
+                InstallLocation = ''
+                UninstallString = ('"{0}" /S' -f $missingUninstaller)
+            }
+            $liveQuietKey = [pscustomobject]@{
+                DisplayName = '360 Total Security Live Quiet Uninstaller'
+                InstallLocation = $missingLocation
+                UninstallString = ('"{0}" /S' -f $missingUninstaller)
+                QuietUninstallString = ('"{0}" /quiet' -f $liveUninstaller)
+            }
+        }
+        $subKeys = @($registryValues.Keys | Sort-Object | ForEach-Object {
+            [pscustomobject]@{ PSPath = $_ }
+        })
+        $fake = New-Fake360CleanupRuntimeProvider `
+            -RegistrySubKeys @{ $uninstallRoot = $subKeys } `
+            -RegistryValues $registryValues
+
+        Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+        try {
+            $findings = @(Get-360Findings)
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+
+        foreach ($reviewOnlyKey in @(
+            $liveUninstallerKey, $unknownKey, $bareCommandKey, $liveLocationKey, $liveIconKey, $liveQuietKey
+        )) {
+            $finding = @($findings | Where-Object { $_.Kind -eq 'InstalledProduct' -and $_.Target -eq $reviewOnlyKey })
+            Assert-TestEqual -Expected 1 -Actual $finding.Count `
+                -Message "The review-only uninstall fixture was not surfaced exactly once: $reviewOnlyKey"
+            Assert-TestEqual -Expected 'ReviewOnly' -Actual $finding[0].Confidence `
+                -Message "An uninstall record without proven orphan evidence was confirmed: $reviewOnlyKey"
+            Assert-TestEqual -Expected 'None' -Actual $finding[0].RemovalType `
+                -Message "An uninstall record without proven orphan evidence became removable: $reviewOnlyKey"
+        }
+
+        $liveFinding = @($findings | Where-Object { $_.Kind -eq 'InstalledProduct' -and $_.Target -eq $liveUninstallerKey })
+        Assert-TestTrue -Condition ($liveFinding[0].Reason -match 'live vendor uninstaller') `
+            -Message 'The available vendor uninstaller was not explained in the finding.'
+
+        foreach ($confirmedKey in @($orphanedKey, $missingOnlyKey)) {
+            $orphanedFinding = @($findings | Where-Object {
+                $_.Kind -eq 'InstalledProduct' -and $_.Target -eq $confirmedKey
+            })
+            Assert-TestEqual -Expected 1 -Actual $orphanedFinding.Count `
+                -Message "The genuinely orphaned uninstall fixture was not surfaced exactly once: $confirmedKey"
+            Assert-TestEqual -Expected 'Confirmed' -Actual $orphanedFinding[0].Confidence `
+                -Message "A record whose explicit file references are stale was not confirmed: $confirmedKey"
+            Assert-TestEqual -Expected 'RegistryKey' -Actual $orphanedFinding[0].RemovalType `
+                -Message "A proven orphan uninstall record did not retain exact-key removal: $confirmedKey"
+        }
+    }
+
+    Invoke-TestCase -Run $run -Name 'service path matching uses a literal 360 path segment' -Test {
+        $services = @(
+            [pscustomobject]@{ Name = 'fixture-segment'; PathName = '"C:\Issue3Fixture\360\x.exe" --service' },
+            [pscustomobject]@{ Name = 'fixture-prefixed-segment'; PathName = '"C:\Issue3Fixture\360DrvMgr\x.exe" --service' },
+            [pscustomobject]@{ Name = 'fixture-octal'; PathName = '"C:\Issue3Fixture\fooðbar\x.exe" --service' },
+            [pscustomobject]@{ Name = 'fixture-embedded'; PathName = '"C:\Issue3Fixture\abc360helper\x.exe" --service' },
+            [pscustomobject]@{ Name = 'fixture-argument'; PathName = '"C:\Issue3Fixture\ordinary.exe" --angle 360' }
+        )
+        $fake = New-Fake360CleanupRuntimeProvider -Services $services
+
+        Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+        try {
+            $findings = @(Get-360Findings)
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+
+        $serviceFindings = @($findings | Where-Object { $_.Kind -eq 'Service' } | Sort-Object Name)
+        Assert-TestEqual -Expected 2 -Actual $serviceFindings.Count `
+            -Message 'The service path boundary produced a missed match or numeric false positive.'
+        Assert-TestSequenceEqual -Expected @('fixture-prefixed-segment', 'fixture-segment') `
+            -Actual @($serviceFindings.Name) `
+            -Message 'The detector did not select the literal and product-prefixed 360 path segments.'
+        foreach ($serviceFinding in $serviceFindings) {
+            Assert-TestEqual -Expected 'ReviewOnly' -Actual $serviceFinding.Confidence `
+                -Message 'A path-name-only service match must stay review-only.'
+            Assert-TestEqual -Expected 'None' -Actual $serviceFinding.RemovalType `
+                -Message 'A path-name-only service match must not become removable.'
+        }
+    }
+
     Invoke-TestCase -Run $run -Name 'detectors consume the injected discovery provider' -Test {
         $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
         $uninstallKey = $uninstallRoot + '\FixtureProduct'
