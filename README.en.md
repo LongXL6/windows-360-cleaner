@@ -64,7 +64,7 @@ See the bilingual [Doubao and generic-agent guide](references/doubao.md) for man
 1. The agent reads `SKILL.md` and checks whether it can actually access local PowerShell.
 2. `Scan` performs a read-only audit and separates `Confirmed` from `ReviewOnly` findings.
 3. The user reviews exact targets and explicitly approves or refuses removal.
-4. `Remove` acts only on confirmed allowlisted targets; `Verify` checks whether anything returns.
+4. `Remove` acts only on targets that are both in the approved Scan report and still confirmed; `Verify` checks whether anything returns.
 
 The core rule is simple: **an agent may scan and explain automatically, but it may not approve permanent deletion for the user.**
 
@@ -72,7 +72,7 @@ The core rule is simple: **an agent may scan and explain automatically, but it m
 
 | Control | Behavior |
 |---|---|
-| Scan before removal | `Scan` is read-only; `Remove` requires a switch, exact phrase, approval, and administrator access |
+| Scan before removal | `Scan` is read-only; `Remove` requires the reviewed Scan JSON, a switch, exact phrase, approval, and administrator access |
 | Ambiguity fails safe | Unsupported targets remain `ReviewOnly` |
 | Broad paths rejected | Drive roots, Windows, user profiles, and whole Temp directories cannot become removal targets |
 | Reparse-point defense | Junctions and symbolic links cause the target batch to fail closed |
@@ -121,10 +121,12 @@ Agents that do not support `$skill-name` do not need a renamed repository or sep
 1. Select **Code → Download ZIP** on GitHub and extract it.
 2. Double-click `scripts\Scan-360.cmd`. It is read-only and does not require administrator access.
 3. Review the generated JSON report.
-4. Only after reviewing exact targets, double-click `scripts\Remove-360.cmd`, read the warnings, press `Y`, enter `REMOVE-360`, and accept UAC.
-5. Restart Windows once and double-click `scripts\Verify-360.cmd`.
+4. Only after reviewing exact targets, double-click `scripts\Remove-360.cmd`, read the warnings, press `Y`, and enter `REMOVE-360`.
+5. Drag the same reviewed Scan JSON into the window, press Enter, and accept UAC.
+6. Review the actions, summary, and remaining findings replayed in the original window.
+7. Restart Windows once and double-click `scripts\Verify-360.cmd`.
 
-Removal is permanent and does not use the Recycle Bin. An incorrect phrase, Enter, or `N` exits safely.
+Removal is permanent and does not use the Recycle Bin. The Scan JSON is the exact approval contract: newly confirmed but unapproved findings are reported, not removed. An incorrect phrase, Enter, or `N` exits safely.
 
 </details>
 
@@ -136,7 +138,14 @@ Removal is permanent and does not use the Recycle Bin. An incorrect phrase, Ente
 .\scripts\Invoke-360Cleanup.ps1 -Mode Scan
 
 # Approved removal of confirmed targets
-.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
+.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ApprovedReport 'C:\path\to\approved-scan.json' `
+  -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
+
+# High-risk browser-profile removal: first create and review a Scan report with the same opt-in
+.\scripts\Invoke-360Cleanup.ps1 -Mode Scan -IncludeBrowserProfiles
+.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ApprovedReport 'C:\path\to\approved-scan.json' `
+  -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360 `
+  -IncludeBrowserProfiles -BrowserProfileConfirmation DELETE-360-BROWSER-DATA
 
 # Verification
 .\scripts\Invoke-360Cleanup.ps1 -Mode Verify
@@ -145,13 +154,13 @@ Removal is permanent and does not use the Recycle Bin. An incorrect phrase, Ente
 .\scripts\Invoke-360Cleanup.ps1 -Mode Scan -OfflineWindowsRoot F:\
 ```
 
-Deleting browser profiles additionally requires `-IncludeBrowserProfiles` and `-BrowserProfileConfirmation DELETE-360-BROWSER-DATA`. Advanced locked-target options require a fresh explanation and approval; read [troubleshooting](references/troubleshooting.md) first.
+Remove can enable browser-profile deletion only when the approved Scan report used `-IncludeBrowserProfiles`; omitting it during Remove safely preserves those profiles. Advanced locked-target options require a fresh explanation and approval; read [troubleshooting](references/troubleshooting.md) first.
 
 </details>
 
 ## Result reporting
 
-The Remove report's `Summary` measures removed objects, files, directories, logical bytes, services, tasks, registry entries, processes, failures, pending actions, retries, and unresolved targets. Path totals are deduplicated before/after snapshots. Logical file size is not guaranteed freed disk space because hard links, sparse files, and compression can differ. The final post-restart result comes from Verify report `Findings`.
+The Remove report's `Summary` measures the approved/current intersection and changes since approval, plus removed objects, files, directories, logical bytes, services, tasks, registry entries, processes, failures, pending actions, retries, and unresolved targets. Path totals are deduplicated before/after snapshots. Logical file size is not guaranteed freed disk space because hard links, sparse files, and compression can differ. The final post-restart result comes from Verify report `Findings`.
 
 ## Validate the skill package
 

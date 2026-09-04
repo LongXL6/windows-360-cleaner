@@ -22,6 +22,14 @@ param(
 
     [string]$ReportPath,
 
+    [string]$ApprovedReport,
+
+    [string]$ApprovedReportHash,
+
+    [string]$OutcomeRunId,
+
+    [switch]$InternalElevatedChild,
+
     [switch]$InternalTestLibraryOnly
 )
 
@@ -51,6 +59,7 @@ $script:KnownFolders = [ordered]@{
 
 $script:CleanupRuntimeProvider = $null
 $script:CleanupRuntimeProviderContext = $null
+$script:CurrentUserRegistryRoot = 'HKCU:'
 
 function Set-360CleanupRuntimeProvider {
     param(
@@ -61,7 +70,7 @@ function Set-360CleanupRuntimeProvider {
     $allowedNames = @(
         'RegistryPathExists', 'RegistrySubKeys', 'RegistryValues',
         'ScheduledTasks', 'Services', 'Processes',
-        'IsAdministrator', 'StartElevatedProcess'
+        'IsAdministrator', 'StartElevatedProcess', 'StopProcess'
     )
     $replacement = @{}
     foreach ($name in @($Provider.Keys)) {
@@ -150,6 +159,56 @@ function Get-360CleanupProcesses {
     })
 }
 
+function Stop-360CleanupProcess {
+    param(
+        [int]$ProcessId,
+        [string]$ExpectedExecutable
+    )
+
+    return Invoke-360CleanupRuntimeProvider -Name 'StopProcess' `
+        -ArgumentList @($ProcessId, $ExpectedExecutable) -Default {
+        param($Id, $ExpectedPath)
+
+        $expected = Get-NormalPath ([string]$ExpectedPath)
+        if (-not $expected) {
+            return [pscustomobject]@{
+                Target = [string]$Id; Result = 'Skipped'; Detail = 'The approved executable path is invalid.'
+            }
+        }
+
+        $process = Get-Process -Id $Id -ErrorAction SilentlyContinue
+        if ($null -eq $process) {
+            return [pscustomobject]@{
+                Target = [string]$Id; Result = 'Skipped'; Detail = 'The approved process has already exited.'
+            }
+        }
+
+        try { $actual = Get-NormalPath ([string]$process.Path) }
+        catch { $actual = $null }
+        if (-not $actual -or -not $actual.Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{
+                Target = [string]$Id; Result = 'Skipped'
+                Detail = 'PID executable no longer matches the executable confirmed during the elevated rescan.'
+            }
+        }
+
+        $target = ('{0} ({1})' -f $process.ProcessName, $Id)
+        try {
+            # Keep the validated Process object so Kill uses that process handle rather than resolving the PID again.
+            $process.Kill()
+            if (-not $process.WaitForExit(5000)) {
+                return [pscustomobject]@{
+                    Target = $target; Result = 'Failed'; Detail = 'The process did not exit within five seconds.'
+                }
+            }
+            return [pscustomobject]@{ Target = $target; Result = 'Success'; Detail = $actual }
+        }
+        catch {
+            return [pscustomobject]@{ Target = $target; Result = 'Failed'; Detail = $_.Exception.Message }
+        }
+    }
+}
+
 function Start-360CleanupElevatedProcess {
     param(
         [string]$FilePath,
@@ -175,6 +234,365 @@ function Get-NormalPath {
     catch {
         return $null
     }
+}
+
+function New-CleanupApprovalContext {
+    param([bool]$IncludeBrowserProfiles = $false)
+
+    $knownFolders = [ordered]@{}
+    foreach ($name in @(
+        'LocalAppData', 'RoamingAppData', 'ProgramFiles', 'ProgramFilesX86', 'ProgramData',
+        'UserProfile', 'Desktop', 'Temp', 'Windows'
+    )) {
+        $knownFolders[$name] = $script:KnownFolders[$name]
+    }
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity.User -or [string]::IsNullOrWhiteSpace($identity.User.Value)) {
+        throw 'The current Windows user SID could not be determined for the approval context.'
+    }
+
+    return [pscustomobject]@{
+        UserSid      = [string]$identity.User.Value
+        KnownFolders = [pscustomobject]$knownFolders
+        Options      = [pscustomobject]@{
+            IncludeBrowserProfiles = [bool]$IncludeBrowserProfiles
+        }
+    }
+}
+
+function Assert-CleanupApprovalContextMatchesCaller {
+    param([object]$ApprovalContext)
+
+    if ($null -eq $ApprovalContext) { throw 'ApprovalContext is required.' }
+    $propertyNames = @($ApprovalContext.PSObject.Properties.Name)
+    if ($propertyNames -notcontains 'UserSid' -or $propertyNames -notcontains 'KnownFolders' -or
+        $propertyNames -notcontains 'Options') {
+        throw 'ApprovalContext must contain UserSid, KnownFolders, and Options.'
+    }
+    if ($null -eq $ApprovalContext.KnownFolders -or $null -eq $ApprovalContext.Options -or
+        @($ApprovalContext.Options.PSObject.Properties.Name) -notcontains 'IncludeBrowserProfiles' -or
+        -not ($ApprovalContext.Options.IncludeBrowserProfiles -is [bool])) {
+        throw 'ApprovalContext contains invalid folders or options.'
+    }
+
+    $expected = New-CleanupApprovalContext `
+        -IncludeBrowserProfiles ([bool]$ApprovalContext.Options.IncludeBrowserProfiles)
+    if (-not ([string]$ApprovalContext.UserSid).Equals(
+        [string]$expected.UserSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The approved Scan report belongs to a different Windows user. Run Scan again as the current user.'
+    }
+
+    $folderNames = @(
+        'LocalAppData', 'RoamingAppData', 'ProgramFiles', 'ProgramFilesX86', 'ProgramData',
+        'UserProfile', 'Desktop', 'Temp', 'Windows'
+    )
+    $sourceFolderNames = @($ApprovalContext.KnownFolders.PSObject.Properties.Name)
+    foreach ($name in $folderNames) {
+        if ($sourceFolderNames -notcontains $name) {
+            throw "ApprovalContext KnownFolders is missing $name."
+        }
+        $approvedValue = [string]$ApprovalContext.KnownFolders.$name
+        $expectedValue = [string]$expected.KnownFolders.$name
+        $approvedPath = Get-NormalPath $approvedValue
+        $expectedPath = Get-NormalPath $expectedValue
+        $bothEmpty = [string]::IsNullOrWhiteSpace($approvedValue) -and
+            [string]::IsNullOrWhiteSpace($expectedValue)
+        if (-not $bothEmpty -and (-not $approvedPath -or
+            -not $approvedValue.Equals($approvedPath, [StringComparison]::OrdinalIgnoreCase) -or
+            -not $expectedPath -or
+            -not $approvedPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase))) {
+            throw "The approved Scan report $name folder does not match the current caller. Run Scan again."
+        }
+    }
+}
+
+function Read-ApprovedCleanupReport {
+    param(
+        [string]$Path,
+        [string]$ExpectedHash
+    )
+
+    $normalPath = Get-NormalPath $Path
+    if (-not $normalPath -or [IO.Path]::GetExtension($normalPath) -ne '.json') {
+        throw 'ApprovedReport must be a valid .json file path.'
+    }
+    if (-not (Test-Path -LiteralPath $normalPath -PathType Leaf)) {
+        throw "Approved cleanup report was not found: $normalPath"
+    }
+
+    try {
+        $bytes = [IO.File]::ReadAllBytes($normalPath)
+    }
+    catch {
+        throw "Approved cleanup report could not be read: $normalPath. $($_.Exception.Message)"
+    }
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedHash)) {
+        if ($ExpectedHash -notmatch '^[0-9a-fA-F]{64}$' -or
+            -not $hash.Equals($ExpectedHash, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Approved cleanup report hash does not match the hash accepted before elevation.'
+        }
+    }
+
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $json = $utf8.GetString($bytes)
+        $report = $json | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Approved cleanup report is not valid UTF-8 JSON: $normalPath. $($_.Exception.Message)"
+    }
+
+    $propertyNames = @($report.PSObject.Properties.Name)
+    if ($propertyNames -notcontains 'SchemaVersion' -or [int]$report.SchemaVersion -ne 2) {
+        throw 'Approved cleanup report must use SchemaVersion 2.'
+    }
+    if ($propertyNames -notcontains 'Mode' -or [string]$report.Mode -cne 'Scan') {
+        throw 'Approved cleanup report must have Mode set to Scan.'
+    }
+    if ($propertyNames -notcontains 'ApprovalContext' -or $null -eq $report.ApprovalContext) {
+        throw 'Approved cleanup report is missing ApprovalContext.'
+    }
+    if ($propertyNames -notcontains 'Findings' -or $null -eq $report.Findings) {
+        throw 'Approved cleanup report is missing Findings.'
+    }
+
+    return [pscustomobject]@{
+        Path   = $normalPath
+        Hash   = $hash
+        Report = $report
+    }
+}
+
+function Set-CleanupSourceContext {
+    param([object]$ApprovalContext)
+
+    if ($null -eq $ApprovalContext) { throw 'ApprovalContext is required.' }
+    $propertyNames = @($ApprovalContext.PSObject.Properties.Name)
+    if ($propertyNames -notcontains 'UserSid' -or $propertyNames -notcontains 'KnownFolders' -or
+        $propertyNames -notcontains 'Options') {
+        throw 'ApprovalContext must contain UserSid, KnownFolders, and Options.'
+    }
+
+    $userSid = [string]$ApprovalContext.UserSid
+    if ($userSid -notmatch '^S-\d+(?:-\d+)+$') {
+        throw 'ApprovalContext contains an invalid Windows user SID.'
+    }
+    $registryRoot = 'Registry::HKEY_USERS\' + $userSid
+    if (-not (Test-360CleanupRegistryPath $registryRoot)) {
+        throw "The approved user's registry hive is not loaded: $registryRoot"
+    }
+
+    $folderNames = @(
+        'LocalAppData', 'RoamingAppData', 'ProgramFiles', 'ProgramFilesX86', 'ProgramData',
+        'UserProfile', 'Desktop', 'Temp', 'Windows'
+    )
+    $sourceFolderNames = @($ApprovalContext.KnownFolders.PSObject.Properties.Name)
+    $knownFolders = [ordered]@{}
+    foreach ($name in $folderNames) {
+        if ($sourceFolderNames -notcontains $name) {
+            throw "ApprovalContext KnownFolders is missing $name."
+        }
+        $value = [string]$ApprovalContext.KnownFolders.$name
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $knownFolders[$name] = ''
+            continue
+        }
+        $normalValue = Get-NormalPath $value
+        if (-not $normalValue -or
+            -not $value.Equals($normalValue, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "ApprovalContext KnownFolders $name must be a normalized absolute literal path."
+        }
+        $knownFolders[$name] = $normalValue
+    }
+    foreach ($name in @('LocalAppData', 'RoamingAppData', 'ProgramFiles', 'ProgramData', 'UserProfile', 'Temp', 'Windows')) {
+        if ([string]::IsNullOrWhiteSpace([string]($knownFolders[$name]))) {
+            throw "ApprovalContext KnownFolders contains an empty required $name path."
+        }
+    }
+    foreach ($name in @('ProgramFiles', 'ProgramFilesX86', 'ProgramData', 'Windows')) {
+        $hostValue = [string]($script:KnownFolders[$name])
+        $approvedValue = [string]($knownFolders[$name])
+        $bothEmpty = [string]::IsNullOrWhiteSpace($hostValue) -and [string]::IsNullOrWhiteSpace($approvedValue)
+        $hostPath = Get-NormalPath $hostValue
+        if (-not $bothEmpty -and (-not $hostPath -or -not $approvedValue.Equals(
+            $hostPath, [StringComparison]::OrdinalIgnoreCase))) {
+            throw "ApprovalContext $name does not match this Windows installation."
+        }
+    }
+    if (@($ApprovalContext.Options.PSObject.Properties.Name) -notcontains 'IncludeBrowserProfiles') {
+        throw 'ApprovalContext Options is missing IncludeBrowserProfiles.'
+    }
+    if (-not ($ApprovalContext.Options.IncludeBrowserProfiles -is [bool])) {
+        throw 'ApprovalContext IncludeBrowserProfiles must be a Boolean value.'
+    }
+
+    $script:KnownFolders = $knownFolders
+    $script:CurrentUserRegistryRoot = $registryRoot
+}
+
+function Get-FindingResourceKey {
+    param(
+        [object]$Finding,
+        [string]$UserSid
+    )
+
+    if ($null -eq $Finding) { throw 'Finding is required.' }
+    $kind = [string]$Finding.Kind
+    $target = [string]$Finding.Target
+    $valueName = [string]$Finding.ValueName
+    if ($kind -eq 'Process') {
+        $target = $valueName
+        $valueName = ''
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($UserSid)) {
+        if ($UserSid -notmatch '^S-\d+(?:-\d+)+$') { throw 'UserSid is not a valid Windows SID.' }
+        $escapedSid = [regex]::Escape($UserSid)
+        $userPrefixes = @(
+            '^HKCU:\\',
+            '^(?:Microsoft\.PowerShell\.Core\\)?Registry::HKEY_CURRENT_USER\\',
+            ('^(?:Microsoft\.PowerShell\.Core\\)?Registry::HKEY_USERS\\' + $escapedSid + '\\')
+        )
+        foreach ($prefix in $userPrefixes) {
+            $match = [regex]::Match($target, $prefix, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($match.Success) {
+                $target = 'USER:\' + $target.Substring($match.Length)
+                break
+            }
+        }
+    }
+
+    if ($kind -in @('Path', 'OfflinePath', 'Process')) {
+        $normalTarget = Get-NormalPath $target
+        if ($normalTarget) { $target = $normalTarget }
+    }
+    $separator = [string][char]31
+    return (($kind, $target, $valueName) -join $separator).ToUpperInvariant()
+}
+
+function Get-FindingApprovalKey {
+    param(
+        [object]$Finding,
+        [string]$UserSid
+    )
+
+    $separator = [string][char]31
+    $resourceKey = Get-FindingResourceKey -Finding $Finding -UserSid $UserSid
+    return (($resourceKey, [string]$Finding.RemovalType) -join $separator).ToUpperInvariant()
+}
+
+function Compare-ApprovedCleanupFindings {
+    param(
+        [object[]]$Approved,
+        [object[]]$Current,
+        [string]$SID
+    )
+
+    $approvedByKey = @{}
+    foreach ($finding in @($Approved | Where-Object {
+        $_.Confidence -eq 'Confirmed' -and -not $_.Offline -and $_.RemovalType -ne 'None'
+    })) {
+        $key = Get-FindingApprovalKey -Finding $finding -UserSid $SID
+        if (-not $approvedByKey.ContainsKey($key)) { $approvedByKey[$key] = $finding }
+    }
+
+    $currentByResourceKey = @{}
+    foreach ($finding in @($Current)) {
+        $resourceKey = Get-FindingResourceKey -Finding $finding -UserSid $SID
+        if (-not $currentByResourceKey.ContainsKey($resourceKey)) {
+            $currentByResourceKey[$resourceKey] = New-Object System.Collections.ArrayList
+        }
+        [void]$currentByResourceKey[$resourceKey].Add($finding)
+    }
+
+    $eligible = New-Object System.Collections.ArrayList
+    $newSinceApproval = New-Object System.Collections.ArrayList
+    foreach ($finding in @($Current | Where-Object {
+        $_.Confidence -eq 'Confirmed' -and -not $_.Offline -and $_.RemovalType -ne 'None'
+    })) {
+        $key = Get-FindingApprovalKey -Finding $finding -UserSid $SID
+        if ($approvedByKey.ContainsKey($key)) {
+            [void]$eligible.Add($finding)
+        }
+        else { [void]$newSinceApproval.Add($finding) }
+    }
+
+    $missingSinceApproval = New-Object System.Collections.ArrayList
+    $noLongerConfirmed = New-Object System.Collections.ArrayList
+    foreach ($key in @($approvedByKey.Keys)) {
+        $approvedFinding = $approvedByKey[$key]
+        $resourceKey = Get-FindingResourceKey -Finding $approvedFinding -UserSid $SID
+        if (-not $currentByResourceKey.ContainsKey($resourceKey)) {
+            [void]$missingSinceApproval.Add($approvedByKey[$key])
+            continue
+        }
+        $stillConfirmed = @($currentByResourceKey[$resourceKey] | Where-Object {
+            $_.Confidence -eq 'Confirmed' -and -not $_.Offline -and
+                (Get-FindingApprovalKey -Finding $_ -UserSid $SID) -eq $key
+        }).Count -gt 0
+        if (-not $stillConfirmed) { [void]$noLongerConfirmed.Add($approvedByKey[$key]) }
+    }
+
+    return [pscustomobject]@{
+        Eligible             = @($eligible)
+        NewSinceApproval     = @($newSinceApproval)
+        MissingSinceApproval = @($missingSinceApproval)
+        NoLongerConfirmed    = @($noLongerConfirmed)
+        ApprovedCount        = $approvedByKey.Count
+    }
+}
+
+function ConvertTo-CleanupQuotedArgument {
+    param([string]$Value)
+
+    if ($Value -match '[\r\n"]') { throw 'A cleanup command-line path contains unsupported quote or newline characters.' }
+    return '"' + $Value + '"'
+}
+
+function New-ElevatedCleanupArgumentLine {
+    param(
+        [string]$ScriptPath,
+        [string]$ApprovedReport,
+        [string]$ApprovedReportHash,
+        [string]$OutcomeRunId,
+        [string]$ReportPath,
+        [bool]$IncludeBrowserProfiles = $false,
+        [bool]$AllowExplorerRestart = $false,
+        [bool]$ForceLockedTargets = $false,
+        [bool]$IncludeIdentityInReport = $false
+    )
+
+    if ($ApprovedReportHash -notmatch '^[0-9a-fA-F]{64}$') {
+        throw 'ApprovedReportHash must be a SHA-256 hash.'
+    }
+    if ($OutcomeRunId -notmatch '^[0-9a-fA-F]{32}$') {
+        throw 'OutcomeRunId must be a 32-character run identifier.'
+    }
+    $argumentParts = @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (ConvertTo-CleanupQuotedArgument $ScriptPath),
+        '-Mode', 'Remove', '-ConfirmRemoval', '-ConfirmationPhrase', 'REMOVE-CONFIRMED-360',
+        '-ApprovedReport', (ConvertTo-CleanupQuotedArgument $ApprovedReport),
+        '-ApprovedReportHash', $ApprovedReportHash,
+        '-OutcomeRunId', $OutcomeRunId,
+        '-InternalElevatedChild',
+        '-ReportPath', (ConvertTo-CleanupQuotedArgument $ReportPath)
+    )
+    if ($IncludeBrowserProfiles) {
+        $argumentParts += @('-IncludeBrowserProfiles', '-BrowserProfileConfirmation', 'DELETE-360-BROWSER-DATA')
+    }
+    if ($AllowExplorerRestart) { $argumentParts += '-AllowExplorerRestart' }
+    if ($ForceLockedTargets) { $argumentParts += '-ForceLockedTargets' }
+    if ($IncludeIdentityInReport) { $argumentParts += '-IncludeIdentityInReport' }
+    return $argumentParts -join ' '
 }
 
 function Test-IsUnderPath {
@@ -430,6 +848,7 @@ function Get-360Findings {
     $programFilesX86 = $script:KnownFolders.ProgramFilesX86
     $programData = $script:KnownFolders.ProgramData
     $tempRoot = $script:KnownFolders.Temp
+    $currentUserRegistryRoot = $script:CurrentUserRegistryRoot.TrimEnd('\')
 
     $machineInstallEvidence = $false
     foreach ($root in @(
@@ -563,7 +982,7 @@ function Get-360Findings {
     }
 
     $uninstallRoots = @(
-        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+        ($currentUserRegistryRoot + '\Software\Microsoft\Windows\CurrentVersion\Uninstall'),
         'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
         'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
     )
@@ -611,8 +1030,8 @@ function Get-360Findings {
     $confirmedRoots = Get-ConfirmedPathRoots @($findings)
 
     $runRoots = @(
-        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run',
-        'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce',
+        ($currentUserRegistryRoot + '\Software\Microsoft\Windows\CurrentVersion\Run'),
+        ($currentUserRegistryRoot + '\Software\Microsoft\Windows\CurrentVersion\RunOnce'),
         'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run',
         'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
     )
@@ -634,7 +1053,7 @@ function Get-360Findings {
         }
     }
 
-    $desktopKey = 'HKCU:\Control Panel\Desktop'
+    $desktopKey = $currentUserRegistryRoot + '\Control Panel\Desktop'
     if (Test-360CleanupRegistryPath $desktopKey) {
         $desktop = Get-360CleanupRegistryValues $desktopKey
         $screenSaver = Get-NormalPath ([string](Get-PropertyValue $desktop 'SCRNSAVE.EXE'))
@@ -975,6 +1394,9 @@ function Save-CleanupReport {
         [object[]]$Findings,
         [object[]]$Actions,
         [object]$Summary = $null,
+        [object]$ApprovalContext = $null,
+        [string]$ApprovedReportHash = $null,
+        [string]$OutcomeRunId = $null,
         [bool]$IncludeIdentity = $false
     )
 
@@ -984,10 +1406,14 @@ function Save-CleanupReport {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
     $report = [pscustomobject]@{
+        SchemaVersion = 2
         Timestamp    = (Get-Date).ToString('o')
         ComputerName = $(if ($IncludeIdentity) { $env:COMPUTERNAME } else { $null })
         User          = $(if ($IncludeIdentity) { [Security.Principal.WindowsIdentity]::GetCurrent().Name } else { $null })
         Mode          = $RunMode
+        ApprovalContext = $ApprovalContext
+        ApprovedReportHash = $ApprovedReportHash
+        OutcomeRunId  = $OutcomeRunId
         Summary       = $Summary
         Findings      = @($Findings)
         Actions       = @($Actions)
@@ -1090,20 +1516,14 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'DeleteTask' ($finding.ValueName + $finding.Target) 'Failed' $_.Exception.Message }
     }
 
-    foreach ($process in @(Get-360CleanupProcesses)) {
-        $executable = Get-NormalPath ([string]$process.ExecutablePath)
-        if (-not $executable) { continue }
-        $shouldStop = $false
-        foreach ($target in $pathTargets) {
-            if (Test-IsUnderPath $executable $target) { $shouldStop = $true; break }
+    foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Process' })) {
+        $processId = 0
+        if (-not [int]::TryParse([string]$finding.Target, [ref]$processId)) {
+            Add-Action $actions 'StopProcess' ([string]$finding.Target) 'Skipped' 'Approved process finding did not contain a valid PID.'
+            continue
         }
-        if ($shouldStop) {
-            try {
-                Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop
-                Add-Action $actions 'StopProcess' ("{0} ({1})" -f $process.Name, $process.ProcessId) 'Success' $executable
-            }
-            catch { Add-Action $actions 'StopProcess' ([string]$process.ProcessId) 'Failed' $_.Exception.Message }
-        }
+        $result = Stop-360CleanupProcess -ProcessId $processId -ExpectedExecutable ([string]$finding.ValueName)
+        Add-Action $actions 'StopProcess' ([string]$result.Target) ([string]$result.Result) ([string]$result.Detail)
     }
 
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'RegistryValue' })) {
@@ -1344,6 +1764,12 @@ function Show-RemovalSummary {
         $Summary.RetryAttempts, $Summary.UnresolvedRetryTargets)
     Write-Host ("Fully removed path targets: {0}; partially cleaned path targets: {1}" -f `
         $Summary.PathTargetsRemoved, $Summary.PartiallyCleanedPathTargets)
+    if (@($Summary.PSObject.Properties.Name) -contains 'ApprovedConfirmed') {
+        Write-Host ("Approved confirmed: {0}; eligible now: {1}; new since approval: {2}" -f `
+            $Summary.ApprovedConfirmed, $Summary.EligibleApproved, $Summary.NewSinceApproval)
+        Write-Host ("Missing since approval: {0}; no longer confirmed: {1}" -f `
+            $Summary.MissingSinceApproval, $Summary.NoLongerConfirmed)
+    }
     Write-Host ("Immediate remaining confirmed findings: {0}; no immediate confirmed findings: {1}" -f `
         $Summary.ImmediateRemainingConfirmed, $Summary.NoImmediateConfirmedFindings)
     Write-Host ("Path accounting complete: {0}; unmeasured path targets: {1}" -f `
@@ -1353,6 +1779,125 @@ function Show-RemovalSummary {
     }
 }
 
+function Show-CleanupReportOutcome {
+    param(
+        [string]$Path,
+        [string]$ExpectedApprovedReportHash,
+        [string]$ExpectedOutcomeRunId
+    )
+
+    $normalPath = Get-NormalPath $Path
+    if (-not $normalPath -or -not (Test-Path -LiteralPath $normalPath -PathType Leaf)) {
+        throw "Cleanup outcome report was not found: $Path"
+    }
+    try {
+        $bytes = [IO.File]::ReadAllBytes($normalPath)
+        $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $report = $utf8.GetString($bytes) | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "Cleanup outcome report is not valid UTF-8 JSON: $normalPath. $($_.Exception.Message)"
+    }
+    $propertyNames = @($report.PSObject.Properties.Name)
+    if ($propertyNames -notcontains 'SchemaVersion' -or [int]$report.SchemaVersion -ne 2) {
+        throw 'Cleanup outcome report must use SchemaVersion 2.'
+    }
+    foreach ($requiredName in @('Mode', 'Summary', 'Actions', 'Findings', 'ApprovedReportHash', 'OutcomeRunId')) {
+        if ($propertyNames -notcontains $requiredName) {
+            throw "Cleanup outcome report is missing $requiredName."
+        }
+    }
+    if ([string]$report.Mode -cne 'Remove' -or $null -eq $report.Summary -or
+        $null -eq $report.Actions -or $null -eq $report.Findings) {
+        throw 'Cleanup outcome report does not contain a complete Remove result.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedApprovedReportHash)) {
+        if ($ExpectedApprovedReportHash -notmatch '^[0-9a-fA-F]{64}$' -or
+            -not ([string]$report.ApprovedReportHash).Equals(
+                $ExpectedApprovedReportHash, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Cleanup outcome report does not match the approved Scan report.'
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedOutcomeRunId)) {
+        if ($ExpectedOutcomeRunId -notmatch '^[0-9a-fA-F]{32}$' -or
+            -not ([string]$report.OutcomeRunId).Equals(
+                $ExpectedOutcomeRunId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Cleanup outcome report does not match this removal run.'
+        }
+    }
+
+    Write-Host ''
+    Write-Host 'Removal actions:' -ForegroundColor Cyan
+    $actionText = @($report.Actions) | Format-Table Time, Action, Target, Result, Detail -AutoSize -Wrap | Out-String
+    if (-not [string]::IsNullOrWhiteSpace($actionText)) { Write-Host ($actionText.TrimEnd()) }
+    if ($null -ne $report.Summary) { Show-RemovalSummary $report.Summary }
+    Write-Host ''
+    Write-Host 'Remaining findings:' -ForegroundColor Cyan
+    if (@($report.Findings).Count -eq 0) {
+        Write-Host 'No matching 360/Qihoo findings.' -ForegroundColor Green
+    }
+    else {
+        $findingText = @($report.Findings) | Sort-Object Confidence, Kind, Name |
+            Select-Object Confidence, Kind, Name, Target, Reason | Format-Table -AutoSize -Wrap | Out-String
+        Write-Host ($findingText.TrimEnd())
+    }
+    Write-Host "Report: $normalPath" -ForegroundColor Cyan
+    return $report
+}
+
+function Invoke-ElevatedCleanup {
+    param(
+        [string]$ScriptPath,
+        [string]$ApprovedReport,
+        [string]$ApprovedReportHash,
+        [string]$OutcomeRunId,
+        [string]$ReportPath,
+        [bool]$IncludeBrowserProfiles = $false,
+        [bool]$AllowExplorerRestart = $false,
+        [bool]$ForceLockedTargets = $false,
+        [bool]$IncludeIdentityInReport = $false
+    )
+
+    $argumentLine = New-ElevatedCleanupArgumentLine -ScriptPath $ScriptPath `
+        -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
+        -OutcomeRunId $OutcomeRunId -ReportPath $ReportPath `
+        -IncludeBrowserProfiles:$IncludeBrowserProfiles -AllowExplorerRestart:$AllowExplorerRestart `
+        -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport
+    try {
+        $process = Start-360CleanupElevatedProcess -FilePath 'powershell.exe' -ArgumentLine $argumentLine
+        if ($null -eq $process -or @($process.PSObject.Properties.Name) -notcontains 'ExitCode') {
+            throw 'The elevated cleanup process did not return an exit code.'
+        }
+        $childExitCode = [int]$process.ExitCode
+    }
+    catch {
+        Write-Error ('Cleanup elevation was cancelled or failed. No removal success is being reported. ' +
+            $_.Exception.Message) -ErrorAction Continue
+        return 5
+    }
+
+    $outcomeDisplayed = $false
+    if (Test-Path -LiteralPath $ReportPath -PathType Leaf) {
+        try {
+            Show-CleanupReportOutcome -Path $ReportPath -ExpectedApprovedReportHash $ApprovedReportHash `
+                -ExpectedOutcomeRunId $OutcomeRunId | Out-Null
+            $outcomeDisplayed = $true
+        }
+        catch {
+            Write-Warning ('The elevated cleanup exited, but its outcome report could not be displayed. ' +
+                $_.Exception.Message)
+        }
+    }
+    else {
+        Write-Warning 'The elevated cleanup did not create an outcome report.'
+    }
+    if ($childExitCode -eq 0 -and -not $outcomeDisplayed) {
+        Write-Error 'The elevated cleanup returned success without a valid bound outcome report.' -ErrorAction Continue
+        return 6
+    }
+    return $childExitCode
+}
+
 if ($InternalTestLibraryOnly) {
     if ($env:WINDOWS_360_CLEANER_TEST_MODE -cne 'ISOLATED-SAFETY-TEST') {
         throw 'InternalTestLibraryOnly is reserved for the bundled isolated safety suite.'
@@ -1360,8 +1905,52 @@ if ($InternalTestLibraryOnly) {
     return
 }
 
+if ($InternalElevatedChild -and $Mode -ne 'Remove') {
+    throw 'InternalElevatedChild is valid only for Remove mode.'
+}
+
 if ($OfflineWindowsRoot -and $Mode -eq 'Remove') {
     throw 'OfflineWindowsRoot is scan-only. Remove from an offline Windows installation requires a separate, explicit workflow.'
+}
+
+$approvedInput = $null
+if ($Mode -eq 'Remove') {
+    if ([string]::IsNullOrWhiteSpace($ApprovedReport)) {
+        throw 'Removal requires -ApprovedReport pointing to the reviewed SchemaVersion 2 Scan report.'
+    }
+    if (-not $ConfirmRemoval) {
+        throw 'Removal requires -ConfirmRemoval after the user has reviewed the scan.'
+    }
+    if ($ConfirmationPhrase -cne 'REMOVE-CONFIRMED-360') {
+        throw 'Removal requires the exact phrase: -ConfirmationPhrase REMOVE-CONFIRMED-360'
+    }
+    if ($IncludeBrowserProfiles -and $BrowserProfileConfirmation -cne 'DELETE-360-BROWSER-DATA') {
+        throw 'Deleting browser profiles requires the separate exact phrase: -BrowserProfileConfirmation DELETE-360-BROWSER-DATA'
+    }
+    if ($InternalElevatedChild -and [string]::IsNullOrWhiteSpace($ApprovedReportHash)) {
+        throw 'The elevated cleanup child requires ApprovedReportHash.'
+    }
+    if ($InternalElevatedChild) {
+        if ($OutcomeRunId -notmatch '^[0-9a-fA-F]{32}$') {
+            throw 'The elevated cleanup child requires a valid OutcomeRunId.'
+        }
+    }
+    else {
+        $OutcomeRunId = [Guid]::NewGuid().ToString('N')
+    }
+
+    $approvedInput = Read-ApprovedCleanupReport -Path $ApprovedReport -ExpectedHash $ApprovedReportHash
+    $ApprovedReport = $approvedInput.Path
+    $ApprovedReportHash = $approvedInput.Hash
+    if (-not $InternalElevatedChild) {
+        Assert-CleanupApprovalContextMatchesCaller -ApprovalContext $approvedInput.Report.ApprovalContext
+    }
+    Set-CleanupSourceContext -ApprovalContext $approvedInput.Report.ApprovalContext
+
+    $approvedBrowserProfiles = [bool]$approvedInput.Report.ApprovalContext.Options.IncludeBrowserProfiles
+    if ($IncludeBrowserProfiles -and -not $approvedBrowserProfiles) {
+        throw 'IncludeBrowserProfiles requires a Scan report created with the same option.'
+    }
 }
 
 if (-not $ReportPath) {
@@ -1372,30 +1961,17 @@ if (-not $ReportPath) {
 $ReportPath = Assert-SafeReportPath $ReportPath
 
 if ($Mode -eq 'Remove') {
-    if (-not $ConfirmRemoval) {
-        throw 'Removal requires -ConfirmRemoval after the user has reviewed the scan.'
+    $isAdministrator = Test-IsAdministrator
+    if ($InternalElevatedChild -and -not $isAdministrator) {
+        throw 'The elevated cleanup child is not running as an administrator.'
     }
-    if ($ConfirmationPhrase -cne 'REMOVE-CONFIRMED-360') {
-        throw 'Removal requires the exact phrase: -ConfirmationPhrase REMOVE-CONFIRMED-360'
-    }
-    if ($IncludeBrowserProfiles -and $BrowserProfileConfirmation -cne 'DELETE-360-BROWSER-DATA') {
-        throw 'Deleting browser profiles requires the separate exact phrase: -BrowserProfileConfirmation DELETE-360-BROWSER-DATA'
-    }
-    if (-not (Test-IsAdministrator)) {
-        $argumentParts = @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath),
-            '-Mode', 'Remove', '-ConfirmRemoval', '-ConfirmationPhrase', 'REMOVE-CONFIRMED-360',
-            '-ReportPath', ('"{0}"' -f $ReportPath)
-        )
-        if ($IncludeBrowserProfiles) {
-            $argumentParts += @('-IncludeBrowserProfiles', '-BrowserProfileConfirmation', 'DELETE-360-BROWSER-DATA')
-        }
-        if ($AllowExplorerRestart) { $argumentParts += '-AllowExplorerRestart' }
-        if ($ForceLockedTargets) { $argumentParts += '-ForceLockedTargets' }
-        if ($IncludeIdentityInReport) { $argumentParts += '-IncludeIdentityInReport' }
-        $argumentLine = $argumentParts -join ' '
-        $process = Start-360CleanupElevatedProcess -FilePath 'powershell.exe' -ArgumentLine $argumentLine
-        exit $process.ExitCode
+    if (-not $isAdministrator) {
+        $elevatedExitCode = Invoke-ElevatedCleanup -ScriptPath $PSCommandPath `
+            -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
+            -OutcomeRunId $OutcomeRunId -ReportPath $ReportPath `
+            -IncludeBrowserProfiles:$IncludeBrowserProfiles -AllowExplorerRestart:$AllowExplorerRestart `
+            -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport
+        exit $elevatedExitCode
     }
 }
 
@@ -1404,7 +1980,9 @@ $initialFindings = @(Get-360Findings -OfflineRoot $OfflineWindowsRoot -IncludePr
 Show-Findings $initialFindings
 
 if ($Mode -eq 'Scan') {
-    Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $initialFindings -Actions @() -IncludeIdentity:$IncludeIdentityInReport
+    $approvalContext = New-CleanupApprovalContext -IncludeBrowserProfiles:$IncludeBrowserProfiles
+    Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $initialFindings -Actions @() `
+        -ApprovalContext $approvalContext -IncludeIdentity:$IncludeIdentityInReport
     Write-Host "Report: $ReportPath" -ForegroundColor Cyan
     exit 0
 }
@@ -1420,15 +1998,24 @@ if ($Mode -eq 'Verify') {
     exit 0
 }
 
+$approvalComparison = Compare-ApprovedCleanupFindings -Approved @($approvedInput.Report.Findings) `
+    -Current $initialFindings -SID ([string]$approvedInput.Report.ApprovalContext.UserSid)
 $removalSummary = [ordered]@{}
-$actions = @(Remove-ConfirmedFindings -Findings $initialFindings -AllowExplorerRestart:$AllowExplorerRestart `
+$actions = @(Remove-ConfirmedFindings -Findings @($approvalComparison.Eligible) -AllowExplorerRestart:$AllowExplorerRestart `
     -ForceLockedTargets:$ForceLockedTargets -Summary $removalSummary)
 $remainingFindings = @(Get-360Findings -IncludeProfiles:$IncludeBrowserProfiles)
 $remainingConfirmed = @($remainingFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
+$removalSummary['ApprovedConfirmed'] = [int]$approvalComparison.ApprovedCount
+$removalSummary['EligibleApproved'] = @($approvalComparison.Eligible).Count
+$removalSummary['NewSinceApproval'] = @($approvalComparison.NewSinceApproval).Count
+$removalSummary['MissingSinceApproval'] = @($approvalComparison.MissingSinceApproval).Count
+$removalSummary['NoLongerConfirmed'] = @($approvalComparison.NoLongerConfirmed).Count
 $removalSummary['ImmediateRemainingConfirmed'] = $remainingConfirmed
 $removalSummary['NoImmediateConfirmedFindings'] = ($remainingConfirmed -eq 0)
 Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $remainingFindings -Actions $actions `
-    -Summary $removalSummary -IncludeIdentity:$IncludeIdentityInReport
+    -Summary $removalSummary -ApprovalContext $approvedInput.Report.ApprovalContext `
+    -ApprovedReportHash $ApprovedReportHash -OutcomeRunId $OutcomeRunId `
+    -IncludeIdentity:$IncludeIdentityInReport
 
 Write-Host ''
 Write-Host 'Removal actions:' -ForegroundColor Cyan
@@ -1444,5 +2031,5 @@ if ($remainingConfirmed -gt 0) {
     exit 2
 }
 
-Write-Host 'Confirmed targets were removed. Restart Windows once, then run Verify.' -ForegroundColor Green
+Write-Host 'Approved targets that were still confirmed were processed. Restart Windows once, then run Verify.' -ForegroundColor Green
 exit 0

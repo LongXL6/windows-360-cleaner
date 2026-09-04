@@ -23,7 +23,7 @@ Agent 必须展示实际命令结果或报告路径。只生成了一段 PowerSh
 2. 双击 `scripts\Scan-360.cmd`。Scan 是只读操作，不需要管理员权限。
 3. 找到脚本生成的 JSON 报告，检查后上传给 Agent。
 4. 让 Agent 分开解释 `Confirmed`、`ReviewOnly` 和保留项。
-5. 只有确认无误后，才双击 `scripts\Remove-360.cmd`，阅读警告并按提示确认管理员授权。
+5. 只有确认无误后，才双击 `scripts\Remove-360.cmd`，阅读警告，把同一份已审阅的 Scan JSON 拖入窗口，再确认管理员授权。
 6. 重启 Windows，再双击 `scripts\Verify-360.cmd`，把 Verify 报告交给 Agent 汇总。
 
 如果 Agent 无法读取 JSON，用户可以打开文件并分段粘贴，但不要删改字段名或只截取成功项目。
@@ -39,7 +39,7 @@ Agent 必须展示实际命令结果或报告路径。只生成了一段 PowerSh
 ```text
 Treat https://github.com/LongXL6/windows-360-cleaner as an AI skill package. Read SKILL.md before doing anything.
 First state whether you can actually access this Windows PC's local PowerShell session. If you can, run Scan only, explain Confirmed, ReviewOnly, and preserved items, then stop for my explicit approval. Do not run Remove before that approval.
-If you cannot access the terminal, do not claim that you scanned or removed anything. Ask me to download the ZIP, run scripts\Scan-360.cmd, and upload the JSON report for interpretation.
+If you cannot access the terminal, do not claim that you scanned or removed anything. Ask me to download the ZIP, run scripts\Scan-360.cmd, and upload the JSON report for interpretation. After I approve it, tell me to run scripts\Remove-360.cmd and drag that same reviewed Scan JSON into the window when prompted.
 After approved removal, run Verify and report every field required by SKILL.md, including zero values. Never broadly delete paths merely because their names contain 360.
 ```
 

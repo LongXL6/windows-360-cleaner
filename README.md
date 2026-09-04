@@ -44,7 +44,7 @@
 请先读取仓库根目录的 SKILL.md；不要只看 README，也不要根据文件名搜索并强删所有含 360 的内容。
 开始前先明确告诉我：你当前是否真的能够读取这个仓库、访问这台 Windows 电脑的本机 PowerShell，并运行命令。
 如果可以操作终端，第一步只能运行 Scan。解释 Confirmed、ReviewOnly 和会保留的正常文件后停止，等待我明确批准；未经批准绝对不能运行 Remove。
-如果不能操作终端，不要声称已经扫描或删除。请让我下载仓库 ZIP，双击 scripts\Scan-360.cmd，再把生成的 JSON 报告上传给你解释。之后仍须等待我的明确批准，才能指导我双击 Remove-360.cmd。
+如果不能操作终端，不要声称已经扫描或删除。请让我下载仓库 ZIP，双击 scripts\Scan-360.cmd，再把生成的 JSON 报告上传给你解释。之后仍须等待我的明确批准，才能指导我双击 Remove-360.cmd，并把同一份已审阅报告拖入窗口。
 完成删除后必须运行 Verify，并按照 SKILL.md 的 Required final output 列出所有清理统计，即使某项为 0 也要写出来。
 ```
 
@@ -79,6 +79,7 @@ Remove 报告中的 `Summary` 会记录：
 - 已删除和仍待 Windows 重启后删除的服务数。
 - 已复核删除的计划任务、注册表键和注册表值数量。
 - 停止的目标进程，以及跳过、失败、待处理、重试和最终未解决的数量。
+- 获批数量、当前仍可处理的交集，以及批准后新增、消失或不再确认的数量。
 - 完全删除、部分清理和无法安全测量的路径数量。
 
 文件大小来自删除前后的安全快照差值，并对父子目标去重。硬链接、稀疏文件和压缩文件可能让“文件逻辑大小”与“磁盘实际新增可用空间”不同，所以本项目不会把两者混为一谈。重启后的最终结果以 Verify 报告的 `Findings` 为准。
@@ -87,7 +88,7 @@ Remove 报告中的 `Summary` 会记录：
 
 | 防呆保护 | 实际行为 |
 |---|---|
-| 先扫描后删除 | `Scan` 只读；`Remove` 需要开关、精确确认短语和管理员授权 |
+| 先扫描后删除 | `Scan` 只读；`Remove` 需要已审阅的 Scan JSON、开关、精确确认短语和管理员授权 |
 | 证据不足不强删 | 可疑目标进入 `ReviewOnly`，不会自动升级为可删除项 |
 | 拒绝宽泛路径 | 磁盘根目录、Windows、用户目录、整个 Temp 等路径永远不会成为删除目标 |
 | 防止目录逃逸 | 目标、父路径或子树出现 junction/符号链接时整批失败关闭 |
@@ -151,10 +152,11 @@ Agent 应先读取 [SKILL.md](SKILL.md)。只有需要判断检测证据时才�
 2. 双击 `scripts\Remove-360.cmd`。
 3. 阅读警告并按 `Y`。
 4. 再输入 `REMOVE-360`。
-5. Windows 弹出管理员授权窗口时点击“是”。
-6. 完成后重启 Windows 一次。
+5. 把刚才已审阅的 Scan JSON 拖入窗口，按回车。
+6. Windows 弹出管理员授权窗口时点击“是”。
+7. 在原窗口查看删除动作、汇总和剩余项，完成后重启 Windows 一次。
 
-删除是永久操作，不会进入回收站。输入错误、直接回车或按 `N` 都会安全退出并返回非成功状态。
+删除是永久操作，不会进入回收站。Scan JSON 是精确批准清单：提权后新出现但未在报告中获批的目标只会报告，不会删除。输入错误、直接回车或按 `N` 都会安全退出并返回非成功状态。
 
 ### 3. 重启后验证
 
@@ -169,11 +171,16 @@ Agent 应先读取 [SKILL.md](SKILL.md)。只有需要判断检测证据时才�
 # 只扫描
 .\scripts\Invoke-360Cleanup.ps1 -Mode Scan
 
-# 删除已确认目标：需要管理员权限、开关和精确确认短语
-.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
+# 删除已确认目标：需要已审阅的 Scan 报告、管理员权限、开关和精确确认短语
+.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ApprovedReport 'C:\path\to\approved-scan.json' `
+  -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
 
-# 高风险可选项：删除浏览器资料，必须先备份并单独批准
-.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360 `
+# 高风险可选项：先用同一选项生成 Scan 报告，备份并单独审阅浏览器资料
+.\scripts\Invoke-360Cleanup.ps1 -Mode Scan -IncludeBrowserProfiles
+
+# 再使用上一步实际生成且已审阅的报告执行删除
+.\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ApprovedReport 'C:\path\to\approved-scan.json' `
+  -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360 `
   -IncludeBrowserProfiles -BrowserProfileConfirmation DELETE-360-BROWSER-DATA
 
 # 删除后验证

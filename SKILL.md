@@ -64,12 +64,12 @@ Do not assert this chain unless the local service, task action, product metadata
 After approval:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ApprovedReport .\approved-scan.json -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
 ```
 
-The script elevates through UAC when needed, records each action, and preserves review-only findings. It fails closed if a path is outside the exact allowlist, contains a reparse point, exceeds the target-count safety limit, or loses its evidence.
+The approved Scan report is the exact removal contract. The script elevates through UAC when needed, restores the scanned user's context, removes only findings that are both approved and still Confirmed, records new unapproved findings without removing them, and shows the final report again in the original window. It fails closed if the report changes across elevation, a path is outside the exact allowlist, contains a reparse point, exceeds the target-count safety limit, or loses its evidence.
 
-Do not add `-IncludeBrowserProfiles` unless the user separately approves deleting browser data after backing up anything needed. That opt-in also requires `-BrowserProfileConfirmation DELETE-360-BROWSER-DATA`.
+Do not add `-IncludeBrowserProfiles` unless the user separately approves deleting browser data after backing up anything needed. Remove can enable it only when the approved Scan report used the same opt-in, and it also requires `-BrowserProfileConfirmation DELETE-360-BROWSER-DATA`; omitting the option during Remove safely preserves profiles from an opted-in Scan.
 
 Default removal does not restart Explorer, force-stop normal applications that loaded a target DLL, or take ownership of locked files. Read [references/troubleshooting.md](references/troubleshooting.md) before considering `-AllowExplorerRestart` or `-ForceLockedTargets`, explain the exact target and risk, and obtain a fresh approval.
 
@@ -100,6 +100,7 @@ Lead with what was found, distinguish confirmed from review-only items, state ex
 - `TotalItemsRemoved`, `FilesRemoved`, `DirectoriesRemoved`, `LogicalBytesRemoved`, and `LogicalSizeRemoved`.
 - `ServicesRemoved`, `ServicesPendingRemoval`, `ScheduledTasksRemoved`, `RegistryKeysRemoved`, and `RegistryValuesRemoved`.
 - `ProcessesStopped`, `SkippedActions`, `FailedActions`, `PendingActions`, `RetryAttempts`, and `UnresolvedRetryTargets`.
+- `ApprovedConfirmed`, `EligibleApproved`, `NewSinceApproval`, `MissingSinceApproval`, and `NoLongerConfirmed`.
 - `PathTargetsRemoved`, `PartiallyCleanedPathTargets`, `ImmediateRemainingConfirmed`, `NoImmediateConfirmedFindings`, and `PathAccountingComplete`.
 
 If `PathAccountingComplete` is false, say that the path totals are minimum confirmed values and include `UnmeasuredPathTargets`. Then report the final count of `Confirmed` items from the Verify report's `Findings`. Say whether deletion was permanent, whether services are pending removal, whether anything remains, and whether a Windows restart is recommended. Never finish with only a vague statement such as “cleanup completed.”

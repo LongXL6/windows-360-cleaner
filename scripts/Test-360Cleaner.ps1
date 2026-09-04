@@ -84,7 +84,8 @@ try {
     & $scriptPath -Mode Scan -ReportPath $scanReport
     Assert-True (Test-Path -LiteralPath $scanReport) 'Scan did not create a report.'
     $json = Get-Content -LiteralPath $scanReport -Raw | ConvertFrom-Json
-    Assert-True ([bool]$json.Timestamp -and $json.Mode -eq 'Scan' -and $null -ne $json.Findings) 'Report schema is incomplete.'
+    Assert-True ($json.SchemaVersion -eq 2 -and [bool]$json.Timestamp -and $json.Mode -eq 'Scan' -and
+        $null -ne $json.Findings -and $null -ne $json.ApprovalContext) 'Report schema is incomplete.'
     Assert-True ($json.PSObject.Properties.Name -contains 'Summary') 'Report schema must expose a Summary field.'
     Assert-True ($null -eq $json.Summary) 'A read-only scan must not claim that content was removed.'
     Assert-True ($null -eq $json.ComputerName -and $null -eq $json.User) 'Reports must omit local identity by default.'
@@ -227,11 +228,15 @@ try {
     Assert-True ($offlineMatch.Count -eq 1 -and $offlineMatch[0].Confidence -eq 'ReviewOnly' -and $offlineMatch[0].Offline) 'Offline Windows findings must remain scan-only.'
 
     $missingPhraseReport = Join-Path $fixtureRoot 'missing-phrase.json'
-    $missingPhrase = Invoke-CleanupScriptProcess ('-Mode Remove -ConfirmRemoval -ReportPath "{0}"' -f $missingPhraseReport)
-    Assert-True ($missingPhrase.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $missingPhraseReport)) 'Remove without the exact phrase must fail before elevation or mutation.'
+    $missingPhrase = Invoke-CleanupScriptProcess ('-Mode Remove -ApprovedReport "{0}" -ConfirmRemoval -ReportPath "{1}"' -f $scanReport, $missingPhraseReport)
+    Assert-True ($missingPhrase.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $missingPhraseReport) -and
+        $missingPhrase.Output.Contains('Removal requires the exact phrase')) `
+        'Remove without the exact phrase must fail for that reason before elevation or mutation.'
     $profilePhraseReport = Join-Path $fixtureRoot 'missing-profile-phrase.json'
-    $missingProfilePhrase = Invoke-CleanupScriptProcess ('-Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360 -IncludeBrowserProfiles -ReportPath "{0}"' -f $profilePhraseReport)
-    Assert-True ($missingProfilePhrase.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $profilePhraseReport)) 'Browser-profile deletion without its separate phrase must fail before elevation or mutation.'
+    $missingProfilePhrase = Invoke-CleanupScriptProcess ('-Mode Remove -ApprovedReport "{0}" -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360 -IncludeBrowserProfiles -ReportPath "{1}"' -f $scanReport, $profilePhraseReport)
+    Assert-True ($missingProfilePhrase.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $profilePhraseReport) -and
+        $missingProfilePhrase.Output.Contains('Deleting browser profiles requires the separate exact phrase')) `
+        'Browser-profile deletion without its separate phrase must fail for that reason before elevation or mutation.'
     $offlineRemoveReport = Join-Path $fixtureRoot 'offline-remove.json'
     $offlineRemove = Invoke-CleanupScriptProcess ('-Mode Remove -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360 -OfflineWindowsRoot "{0}" -ReportPath "{1}"' -f $offlineRoot, $offlineRemoveReport)
     Assert-True ($offlineRemove.ExitCode -ne 0 -and -not (Test-Path -LiteralPath $offlineRemoveReport)) 'Offline Windows removal must fail before elevation or mutation.'
@@ -240,8 +245,23 @@ try {
     Assert-True ($cancel.ExitCode -eq 2) 'User cancellation must return exit code 2, not success.'
     $invalid = Invoke-RemoveCmdInput -Path $removeCmd -InputText '' -SendInput $false
     Assert-True ($invalid.ExitCode -eq 64) 'Missing/invalid input must return exit code 64, not success.'
-    $wrongPhrase = Invoke-RemoveCmdInput -Path $removeCmd -InputText "Y`r`nWRONG" -SendInput $true
+    $wrongPhrase = Invoke-RemoveCmdInput -Path $removeCmd -InputText 'YWRONG' -SendInput $true
     Assert-True ($wrongPhrase.ExitCode -eq 3) 'A wrong second confirmation phrase must stop before PowerShell or UAC.'
+    $missingApproved = Invoke-RemoveCmdInput -Path $removeCmd -InputText 'YREMOVE-360' -SendInput $true
+    Assert-True ($missingApproved.ExitCode -eq 4) `
+        ("An empty approved-report prompt must stop before PowerShell or UAC. Output: {0}" -f $missingApproved.Output)
+    $missingApprovedPath = Join-Path $fixtureRoot 'does-not-exist.json'
+    $missingApprovedFile = Invoke-RemoveCmdInput -Path $removeCmd `
+        -InputText ("YREMOVE-360`r`n{0}" -f $missingApprovedPath) -SendInput $true
+    Assert-True ($missingApprovedFile.ExitCode -eq 4) 'A missing approved report must stop before PowerShell or UAC.'
+    $notJsonDirectory = Join-Path $fixtureRoot 'approved report fixtures'
+    New-Item -ItemType Directory -Path $notJsonDirectory | Out-Null
+    $notJsonPath = Join-Path $notJsonDirectory 'not-approved.txt'
+    Set-Content -LiteralPath $notJsonPath -Value 'NOT-AN-APPROVED-REPORT'
+    $quotedNotJsonInput = "YREMOVE-360`r`n" + '"' + $notJsonPath + '"'
+    $notJson = Invoke-RemoveCmdInput -Path $removeCmd `
+        -InputText $quotedNotJsonInput -SendInput $true
+    Assert-True ($notJson.ExitCode -eq 4) 'A non-JSON approved report must stop before PowerShell or UAC.'
     Assert-True ((Get-FileHash -LiteralPath $normalFile -Algorithm SHA256).Hash -eq $normalHash) 'A normal user file changed during the safety suite.'
     Assert-True ((Get-FileHash -LiteralPath $bookmarks -Algorithm SHA256).Hash -eq $bookmarksHash) 'Browser bookmarks changed without the destructive opt-in.'
 
@@ -262,6 +282,7 @@ finally {
 $additionalSuites = @(
     (Join-Path $PSScriptRoot '..\tests\Test-Detector.ps1')
     (Join-Path $PSScriptRoot '..\tests\Test-Elevation.ps1')
+    (Join-Path $PSScriptRoot '..\tests\Test-Approval.ps1')
 )
 foreach ($suitePath in $additionalSuites) {
     Write-Host ("Running {0}..." -f (Split-Path -Leaf $suitePath)) -ForegroundColor Cyan
