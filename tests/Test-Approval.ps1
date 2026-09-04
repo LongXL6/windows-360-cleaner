@@ -44,6 +44,7 @@ function New-ApprovalFixtureFinding {
         [string]$Confidence = 'Confirmed',
         [string]$RemovalType = 'Path',
         [string]$ValueName = '',
+        [string]$IdentityFingerprint = '',
         [bool]$Offline = $false
     )
 
@@ -55,6 +56,7 @@ function New-ApprovalFixtureFinding {
         Reason      = 'Isolated approval fixture'
         RemovalType = $RemovalType
         ValueName   = $ValueName
+        IdentityFingerprint = $IdentityFingerprint
         Offline     = $Offline
     }
 }
@@ -72,6 +74,11 @@ function New-ApprovalFixtureSummary {
         RegistryKeysRemoved          = 0
         RegistryValuesRemoved        = 0
         ProcessesStopped             = 0
+        VendorUninstallersSucceeded  = 0
+        VendorUninstallersFailed     = 0
+        VendorUninstallersPending    = 0
+        PostVendorMutationBlocked    = $false
+        ImmediateRescanComplete      = $true
         SkippedActions               = 0
         FailedActions                = 0
         PendingActions               = 0
@@ -284,9 +291,11 @@ try {
                 -Message 'The elevated source did not retain the approved user profile.'
 
             $approvedFinding = New-ApprovalFixtureFinding -Kind 'Startup' -Name 'Approved startup' `
-                -Target 'HKCU:\Software\Fixture\Run' -RemovalType 'RegistryValue' -ValueName 'FixtureUpdater'
+                -Target 'HKCU:\Software\Fixture\Run' -RemovalType 'RegistryValue' `
+                -ValueName 'FixtureUpdater' -IdentityFingerprint ('A1' * 32)
             $currentFinding = New-ApprovalFixtureFinding -Kind 'Startup' -Name 'Current startup' `
-                -Target ($registryRoot + '\Software\Fixture\Run') -RemovalType 'RegistryValue' -ValueName 'FixtureUpdater'
+                -Target ($registryRoot + '\Software\Fixture\Run') -RemovalType 'RegistryValue' `
+                -ValueName 'FixtureUpdater' -IdentityFingerprint ('A1' * 32)
             $approvedKey = Get-FindingApprovalKey -Finding $approvedFinding -UserSid $context.UserSid
             $currentKey = Get-FindingApprovalKey -Finding $currentFinding -UserSid $context.UserSid
             Assert-TestEqual -Expected $approvedKey -Actual $currentKey `
@@ -325,6 +334,79 @@ try {
             -Message 'Different removal operations shared one approval key.'
     }
 
+    Invoke-TestCase -Run $run -Name 'vendor uninstaller approval identity includes the scanned SHA-256' -Test {
+        $target = 'C:\Users\ApprovalFixture\AppData\Local\dhpingbao\huabaosetup.exe'
+        $approved = New-ApprovalFixtureFinding -Kind 'VendorUninstaller' -Name 'Duohui vendor uninstaller' `
+            -Target $target -RemovalType 'VendorUninstaller' -ValueName ('A1' * 32)
+        $changed = New-ApprovalFixtureFinding -Kind 'VendorUninstaller' -Name 'Duohui vendor uninstaller' `
+            -Target $target -RemovalType 'VendorUninstaller' -ValueName ('B2' * 32)
+
+        Assert-TestFalse -Condition ((Get-FindingApprovalKey -Finding $approved) -eq
+            (Get-FindingApprovalKey -Finding $changed)) `
+            -Message 'Different vendor-uninstaller hashes shared one approval identity.'
+
+        $comparison = Compare-ApprovedCleanupFindings -Approved @($approved) -Current @($changed) `
+            -SID 'S-1-5-21-111111111-222222222-333333333-1001'
+        Assert-TestEqual -Expected 0 -Actual @($comparison.Eligible).Count `
+            -Message 'A vendor executable whose hash changed after approval remained eligible.'
+        Assert-TestEqual -Expected 1 -Actual @($comparison.NewSinceApproval).Count `
+            -Message 'The changed vendor executable must require a new scan approval.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'non-path approval identity binds the exact approved resource fingerprint' -Test {
+        $approvedFingerprint = 'A1' * 32
+        $changedFingerprint = 'B2' * 32
+        $scenarios = @(
+            [pscustomobject]@{
+                Kind = 'Service'; RemovalType = 'Service'; Target = 'Fixture360Service'; ValueName = ''
+            },
+            [pscustomobject]@{
+                Kind = 'ScheduledTask'; RemovalType = 'Task'; Target = 'Fixture360Task'; ValueName = '\Fixture\'
+            },
+            [pscustomobject]@{
+                Kind = 'Startup'; RemovalType = 'RegistryValue'
+                Target = 'HKCU:\Software\Fixture\Run'; ValueName = 'Fixture360Value'
+            },
+            [pscustomobject]@{
+                Kind = 'RegistryResidue'; RemovalType = 'RegistryKey'
+                Target = 'HKCU:\Software\Fixture360'; ValueName = ''
+            }
+        )
+
+        foreach ($scenario in $scenarios) {
+            $approved = New-ApprovalFixtureFinding -Kind $scenario.Kind `
+                -Name ('Approved ' + $scenario.RemovalType) -Target $scenario.Target `
+                -RemovalType $scenario.RemovalType -ValueName $scenario.ValueName `
+                -IdentityFingerprint $approvedFingerprint
+            $changed = New-ApprovalFixtureFinding -Kind $scenario.Kind `
+                -Name ('Changed ' + $scenario.RemovalType) -Target $scenario.Target `
+                -RemovalType $scenario.RemovalType -ValueName $scenario.ValueName `
+                -IdentityFingerprint $changedFingerprint
+
+            Assert-TestFalse -Condition ((Get-FindingApprovalKey -Finding $approved) -eq
+                (Get-FindingApprovalKey -Finding $changed)) `
+                -Message ("A changed {0} identity shared its approved key." -f $scenario.RemovalType)
+            $missingFingerprint = New-ApprovalFixtureFinding -Kind $scenario.Kind `
+                -Name ('Missing fingerprint ' + $scenario.RemovalType) -Target $scenario.Target `
+                -RemovalType $scenario.RemovalType -ValueName $scenario.ValueName
+            Assert-TestThrows -Operation {
+                [void](Get-FindingApprovalKey -Finding $missingFingerprint)
+            } -ExpectedMessagePattern '(?i)missing its uppercase identity fingerprint' `
+                -Message ("A {0} approval key accepted a missing fingerprint." -f $scenario.RemovalType)
+
+            $comparison = Compare-ApprovedCleanupFindings -Approved @($approved) -Current @($changed) `
+                -SID 'S-1-5-21-111111111-222222222-333333333-1001'
+            Assert-TestEqual -Expected 0 -Actual @($comparison.Eligible).Count `
+                -Message ("A changed {0} identity remained eligible." -f $scenario.RemovalType)
+            Assert-TestEqual -Expected 1 -Actual @($comparison.NewSinceApproval).Count `
+                -Message ("A changed {0} identity did not require fresh approval." -f $scenario.RemovalType)
+            Assert-TestEqual -Expected 0 -Actual @($comparison.MissingSinceApproval).Count `
+                -Message ("A changed {0} identity was mislabeled as an absent resource." -f $scenario.RemovalType)
+            Assert-TestEqual -Expected 1 -Actual @($comparison.NoLongerConfirmed).Count `
+                -Message ("The approved {0} identity change was not surfaced." -f $scenario.RemovalType)
+        }
+    }
+
     Invoke-TestCase -Run $run -Name 'only the exact approved and current confirmed intersection is eligible' -Test {
         $sid = 'S-1-5-21-111111111-222222222-333333333-1001'
         $approvedPath = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Approved path' `
@@ -338,13 +420,16 @@ try {
         $secondCurrentProcess = New-ApprovalFixtureFinding -Kind 'Process' -Name 'Second current process' `
             -Target '9901' -RemovalType 'Process' -ValueName 'C:\Program Files\360\agent.exe'
         $missingService = New-ApprovalFixtureFinding -Kind 'Service' -Name 'Missing service' `
-            -Target 'Fixture360Service' -RemovalType 'Service'
+            -Target 'Fixture360Service' -RemovalType 'Service' -IdentityFingerprint ('C3' * 32)
         $approvedTask = New-ApprovalFixtureFinding -Kind 'ScheduledTask' -Name 'Downgraded task' `
-            -Target 'Fixture360Task' -RemovalType 'Task' -ValueName '\Fixture\'
+            -Target 'Fixture360Task' -RemovalType 'Task' -ValueName '\Fixture\' `
+            -IdentityFingerprint ('D4' * 32)
         $reviewTask = New-ApprovalFixtureFinding -Kind 'ScheduledTask' -Name 'Downgraded task' `
-            -Target 'Fixture360Task' -Confidence 'ReviewOnly' -RemovalType 'Task' -ValueName '\Fixture\'
+            -Target 'Fixture360Task' -Confidence 'ReviewOnly' -RemovalType 'Task' -ValueName '\Fixture\' `
+            -IdentityFingerprint ('D4' * 32)
         $newStartup = New-ApprovalFixtureFinding -Kind 'Startup' -Name 'New startup' `
-            -Target 'HKCU:\Software\Fixture\Run' -RemovalType 'RegistryValue' -ValueName 'New360Value'
+            -Target 'HKCU:\Software\Fixture\Run' -RemovalType 'RegistryValue' `
+            -ValueName 'New360Value' -IdentityFingerprint ('E5' * 32)
 
         $comparison = Compare-ApprovedCleanupFindings `
             -Approved @($approvedPath, $approvedProcess, $missingService, $approvedTask) `
@@ -461,6 +546,11 @@ try {
             RegistryKeysRemoved         = 0
             RegistryValuesRemoved       = 0
             ProcessesStopped            = 0
+            VendorUninstallersSucceeded = 0
+            VendorUninstallersFailed    = 0
+            VendorUninstallersPending   = 0
+            PostVendorMutationBlocked   = $false
+            ImmediateRescanComplete     = $true
             SkippedActions              = 0
             FailedActions               = 0
             PendingActions              = 0
@@ -485,7 +575,8 @@ try {
             Detail = 'Synthetic action'
         }
         $remaining = New-ApprovalFixtureFinding -Kind 'Service' -Name 'Remaining fixture service' `
-            -Target 'Remaining360Service' -RemovalType 'Service'
+            -Target 'Remaining360Service' -RemovalType 'Service' `
+            -IdentityFingerprint ('F6' * 32)
         [void](Write-ApprovalFixtureReport -Path $outcomePath -Mode 'Remove' -Summary $summary `
             -Actions @($action) -Findings @($remaining) -ComputerName 'SECRET-COMPUTER' `
             -User 'SECRET-DOMAIN\SECRET-USER' -ApprovedReportHash $approvedHash -OutcomeRunId $runId)
@@ -516,6 +607,35 @@ try {
             Assert-TestFalse -Condition $displayText.Contains($secretText) `
                 -Message "The renderer displayed stored identity data: $secretText"
         }
+    }
+
+    Invoke-TestCase -Run $run -Name 'blocked immediate rescan labels findings as a pre-mutation snapshot' -Test {
+        $outcomePath = Join-Path $fixtureRoot 'blocked-rescan-outcome.json'
+        $approvedHash = 'A7' * 32
+        $runId = 'B8' * 16
+        $summary = New-ApprovalFixtureSummary
+        $summary.PostVendorMutationBlocked = $true
+        $summary.ImmediateRescanComplete = $false
+        $summary.ImmediateRemainingConfirmed = $null
+        $summary.NoImmediateConfirmedFindings = $false
+        $snapshotFinding = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Last safe snapshot fixture' `
+            -Target 'C:\Users\ApprovalFixture\AppData\Local\dhpingbao'
+        [void](Write-ApprovalFixtureReport -Path $outcomePath -Mode 'Remove' -Summary $summary `
+            -Findings @($snapshotFinding) -ApprovedReportHash $approvedHash -OutcomeRunId $runId)
+
+        $renderedItems = @(Show-CleanupReportOutcome -Path $outcomePath `
+            -ExpectedApprovedReportHash $approvedHash -ExpectedOutcomeRunId $runId 6>&1)
+        $displayText = @($renderedItems | Where-Object {
+            -not (@($_.PSObject.Properties.Name) -contains 'SchemaVersion' -and
+                @($_.PSObject.Properties.Name) -contains 'Mode')
+        }) | Out-String -Width 4096
+
+        Assert-TestTrue -Condition ($displayText -match '(?i)last safe pre-mutation') `
+            -Message 'The blocked outcome did not label findings as the last safe snapshot.'
+        Assert-TestTrue -Condition ($displayText -match '(?i)not proof of current remaining state') `
+            -Message 'The blocked outcome mislabeled the snapshot as current remaining-state proof.'
+        Assert-TestFalse -Condition $displayText.Contains('Remaining findings:') `
+            -Message 'The blocked outcome used the ordinary remaining-findings heading.'
     }
 
     Invoke-TestCase -Run $run -Name 'outcome rendering rejects incomplete or unbound reports' -Test {

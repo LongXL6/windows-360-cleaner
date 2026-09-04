@@ -19,6 +19,7 @@ This repository is an agent skill package, not a standalone cleanup application.
 8. Preserve 360 browser `User Data` profiles by default because they can contain bookmarks, history, sessions, and other user data. Detect browser `Application` directories separately as products. Use the separate profile opt-in only after the user approves that exact data loss.
 9. Never overwrite an existing report or non-JSON file. Reports omit the local computer and user identity unless the user explicitly requests it.
 10. Do not force-stop a normal application merely because it loaded a target DLL. Default to reboot-and-verify for locked targets; Explorer restart and ACL repair are separate advanced approvals.
+11. Treat a vendor uninstaller as executable code, not as an ordinary leftover. Run only the separately approved `%LOCALAPPDATA%\dhpingbao\huabaosetup.exe` whose SHA-256 and product evidence still match and whose Authenticode status is valid with exact signer simple name `Beijing Qihu Technology Co., Ltd.`. Pass only the built-in `/uninstall:byUserName` argument. Never execute a registry-supplied uninstall command line.
 
 ## Workflow
 
@@ -73,6 +74,8 @@ Do not add `-IncludeBrowserProfiles` unless the user separately approves deletin
 
 Default removal does not restart Explorer, force-stop normal applications that loaded a target DLL, or take ownership of locked files. Read [references/troubleshooting.md](references/troubleshooting.md) before considering `-AllowExplorerRestart` or `-ForceLockedTargets`, explain the exact target and risk, and obtain a fresh approval. Force processing must remain last: repair only a verified exact denied frontier without recursive ACL propagation, then rescan the complete approved root before deletion. Never reinterpret a reparse point, an unreadable path item, or an unknown inspection error as repairable access denial.
 
+An approved Duohui vendor-uninstaller finding is processed before the deterministic leftover actions, but only after the complete path mutation plan has passed its global safety preflight. The exact file path, valid exact signer, product evidence, reparse-point state, and approved SHA-256 must be revalidated immediately before launch. Bind the stable identity fingerprint of every approved service, task, registry value, and registry-key tree into the Scan approval key, revalidate it before any mutation, and compare it again after the vendor runs; a changed or unreadable identity is not eligible for the stale approved action. A timeout or surviving process under the Duohui root is not permission to kill the process or continue deleting related resources; keep the outcome attention-required and continue only independently proven approved work.
+
 ### 5. Verify
 
 ```powershell
@@ -83,7 +86,7 @@ Recommend one restart after deleting services or Explorer extensions, then scan 
 
 ### 6. Report the measured outcome
 
-After removal, retain `Summary` from the Remove JSON report and keep `Actions` available for item-by-item auditing. The file, directory, and logical-byte totals are measured from deduplicated before-and-after path snapshots; do not describe logical bytes as actual freed disk space because hard links, sparse files, and compression can make them differ. When `PathAccountingComplete` is false, present path totals as minimum confirmed values. After running Verify, use its `Findings`—not its null `Summary`—for the final post-restart confirmed count.
+After removal, retain `Summary` from the Remove JSON report and keep `Actions` available for item-by-item auditing. The file, directory, and logical-byte totals are measured from deduplicated before-and-after path snapshots; do not describe logical bytes as actual freed disk space because hard links, sparse files, and compression can make them differ. When `PathAccountingComplete` is false, present path totals as minimum confirmed values. When `ImmediateRescanComplete` is false, label the saved findings as the last safe pre-mutation snapshot, state that current remaining status is unknown, and keep the run attention-required. After running Verify, use its `Findings`—not its null `Summary`—for the final post-restart confirmed count.
 
 ## Special situations
 
@@ -99,9 +102,9 @@ Lead with what was found, distinguish confirmed from review-only items, state ex
 
 - `TotalItemsRemoved`, `FilesRemoved`, `DirectoriesRemoved`, `LogicalBytesRemoved`, and `LogicalSizeRemoved`.
 - `ServicesRemoved`, `ServicesPendingRemoval`, `ScheduledTasksRemoved`, `RegistryKeysRemoved`, and `RegistryValuesRemoved`.
-- `ProcessesStopped`, `SkippedActions`, `FailedActions`, `PendingActions`, `RetryAttempts`, and `UnresolvedRetryTargets`.
+- `ProcessesStopped`, `VendorUninstallersSucceeded`, `VendorUninstallersFailed`, `VendorUninstallersPending`, `SkippedActions`, `FailedActions`, `PendingActions`, `RetryAttempts`, and `UnresolvedRetryTargets`.
 - `AccessDeniedPathTargets`, `AclRepairAttempts`, `AclRepairFailures`, and `UnresolvedPathTargets`.
 - `ApprovedConfirmed`, `EligibleApproved`, `NewSinceApproval`, `MissingSinceApproval`, and `NoLongerConfirmed`.
-- `PathTargetsRemoved`, `PartiallyCleanedPathTargets`, `ImmediateRemainingConfirmed`, `NoImmediateConfirmedFindings`, and `PathAccountingComplete`.
+- `PathTargetsRemoved`, `PartiallyCleanedPathTargets`, `PostVendorMutationBlocked`, `ImmediateRescanComplete`, `ImmediateRemainingConfirmed`, `NoImmediateConfirmedFindings`, and `PathAccountingComplete`.
 
 If `PathAccountingComplete` is false, say that the path totals are minimum confirmed values and include `UnmeasuredPathTargets`. Then report the final count of `Confirmed` items from the Verify report's `Findings`. Say whether deletion was permanent, whether services are pending removal, whether anything remains, and whether a Windows restart is recommended. Never finish with only a vague statement such as “cleanup completed.”

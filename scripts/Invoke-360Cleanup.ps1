@@ -71,7 +71,8 @@ function Set-360CleanupRuntimeProvider {
         'RegistryPathExists', 'RegistrySubKeys', 'RegistryValues',
         'ScheduledTasks', 'Services', 'Processes',
         'IsAdministrator', 'StartElevatedProcess', 'StopProcess', 'Is360File',
-        'PathItem', 'PathChildren', 'RemovePath', 'RepairPathAcl'
+        'PathItem', 'PathChildren', 'RemovePath', 'RepairPathAcl',
+        'StartVendorUninstaller', 'IsTrustedDuohuiVendorFile'
     )
     $replacement = @{}
     foreach ($name in @($Provider.Keys)) {
@@ -222,6 +223,120 @@ function Start-360CleanupElevatedProcess {
     }
 }
 
+function Start-360CleanupVendorUninstaller {
+    param(
+        [string]$FilePath,
+        [string]$ArgumentLine,
+        [int]$TimeoutMilliseconds,
+        [scriptblock]$OnStarted
+    )
+
+    $launchState = [pscustomobject]@{ Started = $false }
+    $trackedOnStarted = {
+        if (-not $launchState.Started) {
+            $launchState.Started = $true
+            & $OnStarted
+        }
+    }.GetNewClosure()
+
+    try {
+        $result = Invoke-360CleanupRuntimeProvider -Name 'StartVendorUninstaller' `
+            -ArgumentList @($FilePath, $ArgumentLine, $TimeoutMilliseconds, $trackedOnStarted) -Default {
+            param($Executable, $Arguments, $Timeout, $ReleaseApprovedFileHandle)
+
+            $process = $null
+            try {
+                $process = Start-Process -FilePath $Executable -ArgumentList $Arguments `
+                    -PassThru -ErrorAction Stop
+                if ($null -eq $process) { throw 'Start-Process did not return a process object.' }
+
+                try { & $ReleaseApprovedFileHandle }
+                catch {
+                    return [pscustomobject]@{
+                        Result = 'Pending'
+                        ExitCode = $null
+                        Detail = 'The vendor uninstaller started, but its launch-boundary callback failed. It was not terminated.'
+                    }
+                }
+
+                try {
+                    if (-not $process.WaitForExit($Timeout)) {
+                        return [pscustomobject]@{
+                            Result = 'Pending'
+                            ExitCode = $null
+                            Detail = "The vendor uninstaller did not exit within $Timeout milliseconds. It was not terminated."
+                        }
+                    }
+
+                    $process.Refresh()
+                    $exitCode = [int]$process.ExitCode
+                    if ($exitCode -eq 0) {
+                        return [pscustomobject]@{
+                            Result = 'Success'
+                            ExitCode = $exitCode
+                            Detail = 'The vendor uninstaller exited successfully.'
+                        }
+                    }
+                    return [pscustomobject]@{
+                        Result = 'Failed'
+                        ExitCode = $exitCode
+                        Detail = "The vendor uninstaller exited with code $exitCode."
+                    }
+                }
+                catch {
+                    return [pscustomobject]@{
+                        Result = 'Pending'
+                        ExitCode = $null
+                        Detail = ('The vendor uninstaller started, but its exit could not be proven. It was not terminated. ' + $_.Exception.Message)
+                    }
+                }
+            }
+            finally {
+                if ($null -ne $process) {
+                    try { $process.Dispose() }
+                    catch {}
+                }
+            }
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Result = $(if ($launchState.Started) { 'Pending' } else { 'Failed' })
+            ExitCode = $null
+            Detail = $(if ($launchState.Started) {
+                'The vendor uninstaller started, but its final state is unknown. It was not terminated. ' + $_.Exception.Message
+            } else { $_.Exception.Message })
+        }
+    }
+
+    if ($null -eq $result) {
+        return [pscustomobject]@{
+            Result = $(if ($launchState.Started) { 'Pending' } else { 'Failed' }); ExitCode = $null
+            Detail = 'The vendor-uninstaller provider returned no result.'
+        }
+    }
+    $propertyNames = @($result.PSObject.Properties.Name)
+    if ($propertyNames -notcontains 'Result' -or $propertyNames -notcontains 'ExitCode' -or
+        $propertyNames -notcontains 'Detail' -or
+        [string]$result.Result -notin @('Success', 'Failed', 'Pending')) {
+        return [pscustomobject]@{
+            Result = $(if ($launchState.Started) { 'Pending' } else { 'Failed' }); ExitCode = $null
+            Detail = 'The vendor-uninstaller provider returned an invalid result.'
+        }
+    }
+    if (-not $launchState.Started -and [string]$result.Result -ne 'Failed') {
+        return [pscustomobject]@{
+            Result = 'Failed'; ExitCode = $null
+            Detail = 'The vendor-uninstaller provider did not prove that startup completed at the locked-file boundary.'
+        }
+    }
+    return [pscustomobject]@{
+        Result = [string]$result.Result
+        ExitCode = $result.ExitCode
+        Detail = [string]$result.Detail
+    }
+}
+
 function Get-360CleanupPathItem {
     param([string]$Path)
 
@@ -276,6 +391,147 @@ function Get-NormalPath {
     }
     catch {
         return $null
+    }
+}
+
+function Get-360CleanupStreamSha256 {
+    param([IO.Stream]$Stream)
+
+    if ($null -eq $Stream -or -not $Stream.CanRead -or -not $Stream.CanSeek) {
+        throw 'A readable, seekable stream is required for SHA-256 verification.'
+    }
+    $Stream.Position = 0
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha256.ComputeHash($Stream))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+        $Stream.Position = 0
+    }
+}
+
+function Get-RegistryKeyLeafName {
+    param([object]$Key)
+
+    if ($null -eq $Key) { return '' }
+    $propertyNames = @($Key.PSObject.Properties.Name)
+    if ($propertyNames -contains 'PSChildName' -and
+        -not [string]::IsNullOrWhiteSpace([string]$Key.PSChildName)) {
+        return [string]$Key.PSChildName
+    }
+    if ($propertyNames -notcontains 'PSPath') { return '' }
+    $match = [regex]::Match([string]$Key.PSPath, '[\\/]([^\\/]+)$')
+    if (-not $match.Success) { return '' }
+    return [string]$match.Groups[1].Value
+}
+
+function Get-DuohuiCleanupPathRoots {
+    $roots = New-Object System.Collections.ArrayList
+    if ($script:KnownFolders.LocalAppData) {
+        [void]$roots.Add((Get-NormalPath (Join-Path $script:KnownFolders.LocalAppData 'dhpingbao')))
+    }
+    if ($script:KnownFolders.Temp) {
+        [void]$roots.Add((Get-NormalPath (Join-Path $script:KnownFolders.Temp 'duohuipingbao')))
+        [void]$roots.Add((Get-NormalPath (Join-Path $script:KnownFolders.Temp 'huabao_tmp')))
+    }
+    return @($roots | Where-Object { $_ })
+}
+
+function Test-IsExactDuohuiCleanupPath {
+    param([string]$Path)
+
+    $normal = Get-NormalPath $Path
+    if (-not $normal) { return $false }
+    foreach ($root in @(Get-DuohuiCleanupPathRoots)) {
+        if ($normal.Equals($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Get-DuohuiVendorUninstallerPath {
+    if (-not $script:KnownFolders.LocalAppData) { return $null }
+    return Get-NormalPath (Join-Path $script:KnownFolders.LocalAppData 'dhpingbao\huabaosetup.exe')
+}
+
+function Invoke-ApprovedDuohuiVendorUninstaller {
+    param([object]$Finding)
+
+    $expectedPath = Get-DuohuiVendorUninstallerPath
+    $approvedPath = Get-NormalPath ([string]$Finding.Target)
+    $approvedHash = [string]$Finding.ValueName
+    if (-not $expectedPath -or -not $approvedPath -or
+        -not $approvedPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return [pscustomobject]@{
+            Result = 'Failed'; ExitCode = $null
+            Detail = 'The approved vendor-uninstaller target is not the exact dhpingbao huabaosetup.exe path.'
+        }
+    }
+    if ($approvedHash -notmatch '^[0-9A-F]{64}$') {
+        return [pscustomobject]@{
+            Result = 'Failed'; ExitCode = $null
+            Detail = 'The approved vendor-uninstaller finding does not contain an uppercase SHA-256 identity.'
+        }
+    }
+
+    $pathState = Get-PathTraversalSafetyState $approvedPath
+    if ($pathState.State -ne 'Safe' -or -not $pathState.Exists -or -not $pathState.TreeScanComplete) {
+        return [pscustomobject]@{
+            Result = 'Failed'; ExitCode = $null
+            Detail = 'The exact vendor-uninstaller path chain was not proven safe immediately before launch.'
+        }
+    }
+    $lockState = [pscustomobject]@{
+        Stream = $null
+        Released = $false
+    }
+    $releaseFileHandle = {
+        if (-not $lockState.Released) {
+            if ($null -ne $lockState.Stream) {
+                $lockState.Stream.Dispose()
+                $lockState.Stream = $null
+            }
+            $lockState.Released = $true
+        }
+    }.GetNewClosure()
+
+    try {
+        $lockState.Stream = [IO.File]::Open(
+            $approvedPath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read
+        )
+        if (-not (Test-IsTrustedDuohuiVendorFile $approvedPath)) {
+            return [pscustomobject]@{
+                Result = 'Failed'; ExitCode = $null
+                Detail = 'The locked vendor-uninstaller file no longer has the required valid publisher signature and Duohui/Huabao metadata.'
+            }
+        }
+        $actualHash = Get-360CleanupStreamSha256 $lockState.Stream
+        if (-not $actualHash.Equals($approvedHash, [StringComparison]::Ordinal)) {
+            return [pscustomobject]@{
+                Result = 'Failed'; ExitCode = $null
+                Detail = 'The vendor uninstaller changed after approval; it was not started.'
+            }
+        }
+
+        return Start-360CleanupVendorUninstaller -FilePath $approvedPath `
+            -ArgumentLine '/uninstall:byUserName' -TimeoutMilliseconds 60000 `
+            -OnStarted $releaseFileHandle
+    }
+    catch {
+        return [pscustomobject]@{
+            Result = $(if ($lockState.Released) { 'Pending' } else { 'Failed' })
+            ExitCode = $null
+            Detail = $(if ($lockState.Released) {
+                'The vendor uninstaller may have started, but its final state is unknown. It was not terminated. ' + $_.Exception.Message
+            } else { $_.Exception.Message })
+        }
+    }
+    finally {
+        try { & $releaseFileHandle }
+        catch {}
     }
 }
 
@@ -514,7 +770,7 @@ function Get-FindingResourceKey {
         }
     }
 
-    if ($kind -in @('Path', 'OfflinePath', 'Process')) {
+    if ($kind -in @('Path', 'OfflinePath', 'Process', 'VendorUninstaller')) {
         $normalTarget = Get-NormalPath $target
         if ($normalTarget) { $target = $normalTarget }
     }
@@ -530,7 +786,13 @@ function Get-FindingApprovalKey {
 
     $separator = [string][char]31
     $resourceKey = Get-FindingResourceKey -Finding $Finding -UserSid $UserSid
-    return (($resourceKey, [string]$Finding.RemovalType) -join $separator).ToUpperInvariant()
+    $removalType = [string]$Finding.RemovalType
+    $identityFingerprint = [string](Get-PropertyValue $Finding 'IdentityFingerprint')
+    if ($removalType -in @('Service', 'Task', 'RegistryValue', 'RegistryKey') -and
+        $identityFingerprint -notmatch '^[0-9A-F]{64}$') {
+        throw "Confirmed $removalType finding is missing its uppercase identity fingerprint."
+    }
+    return (($resourceKey, $removalType, $identityFingerprint) -join $separator).ToUpperInvariant()
 }
 
 function Compare-ApprovedCleanupFindings {
@@ -774,6 +1036,40 @@ function Test-IsDuohuiFile {
     catch { return $false }
 }
 
+function Test-IsTrustedDuohuiVendorFile {
+    param([string]$Path)
+
+    return [bool](Invoke-360CleanupRuntimeProvider -Name 'IsTrustedDuohuiVendorFile' `
+        -ArgumentList @($Path) -Default {
+        param($CandidatePath)
+
+        if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) { return $false }
+        try {
+            $signature = Get-AuthenticodeSignature -LiteralPath $CandidatePath -ErrorAction Stop
+            if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) {
+                return $false
+            }
+            $simpleName = $signature.SignerCertificate.GetNameInfo(
+                [Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+                $false
+            )
+            if (-not [string]$simpleName -or
+                -not ([string]$simpleName).Equals(
+                    'Beijing Qihu Technology Co., Ltd.',
+                    [StringComparison]::Ordinal
+                )) {
+                return $false
+            }
+
+            $version = (Get-Item -LiteralPath $CandidatePath -Force -ErrorAction Stop).VersionInfo
+            $metadata = '{0} {1} {2} {3}' -f $version.CompanyName, $version.ProductName, `
+                $version.FileDescription, $version.OriginalFilename
+            return $metadata -match '(?i)多绘|画报|duohui|huabao'
+        }
+        catch { return $false }
+    })
+}
+
 function Test-DirectoryHas360File {
     param(
         [string]$Path,
@@ -845,9 +1141,10 @@ function New-Finding {
         [ValidateSet('Confirmed', 'ReviewOnly')]
         [string]$Confidence,
         [string]$Reason,
-        [ValidateSet('Path', 'RegistryKey', 'RegistryValue', 'Service', 'Task', 'Process', 'None')]
+        [ValidateSet('Path', 'RegistryKey', 'RegistryValue', 'Service', 'Task', 'Process', 'VendorUninstaller', 'None')]
         [string]$RemovalType = 'None',
         [string]$ValueName = '',
+        [string]$IdentityFingerprint = '',
         [bool]$Offline = $false
     )
 
@@ -859,6 +1156,7 @@ function New-Finding {
         Reason      = $Reason
         RemovalType = $RemovalType
         ValueName   = $ValueName
+        IdentityFingerprint = $IdentityFingerprint
         Offline     = $Offline
     }
 }
@@ -955,6 +1253,62 @@ function Get-360Findings {
             -RemovalType $(if ($confirmed) { 'Path' } else { 'None' }))
     }
 
+    $duohuiInstallRoot = if ($localAppData) {
+        Get-NormalPath (Join-Path $localAppData 'dhpingbao')
+    }
+    else { $null }
+    $duohuiVendorPath = Get-DuohuiVendorUninstallerPath
+    if ($duohuiVendorPath -and (Test-Path -LiteralPath $duohuiVendorPath -PathType Leaf)) {
+        $vendorHash = ''
+        $hashError = ''
+        $vendorPathState = Get-PathTraversalSafetyState $duohuiVendorPath
+        $vendorPathSafe = $vendorPathState.State -eq 'Safe' -and $vendorPathState.Exists -and
+            $vendorPathState.TreeScanComplete
+        $trustedVendorFile = $false
+        if (-not $vendorPathSafe) {
+            $hashError = 'The exact uninstaller path chain was not proven safe.'
+        }
+        else {
+            $identityStream = $null
+            try {
+                $identityStream = [IO.File]::Open(
+                    $duohuiVendorPath,
+                    [IO.FileMode]::Open,
+                    [IO.FileAccess]::Read,
+                    [IO.FileShare]::Read
+                )
+                $trustedVendorFile = Test-IsTrustedDuohuiVendorFile $duohuiVendorPath
+                if ($trustedVendorFile) {
+                    $vendorHash = Get-360CleanupStreamSha256 $identityStream
+                }
+            }
+            catch { $hashError = $_.Exception.Message }
+            finally {
+                if ($null -ne $identityStream) { $identityStream.Dispose() }
+            }
+        }
+        $pairedRootConfirmed = @($findings | Where-Object {
+            $_.Confidence -eq 'Confirmed' -and $_.RemovalType -eq 'Path' -and
+            (Get-NormalPath ([string]$_.Target)) -and
+            (Get-NormalPath ([string]$_.Target)).Equals($duohuiInstallRoot, [StringComparison]::OrdinalIgnoreCase)
+        }).Count -eq 1
+        $vendorConfirmed = $vendorPathSafe -and $pairedRootConfirmed -and $trustedVendorFile -and
+            $vendorHash -match '^[0-9A-F]{64}$'
+        $vendorReason = if ($vendorConfirmed) {
+            'Exact Duohui uninstaller under a confirmed dhpingbao root with a valid Beijing Qihu Technology Co., Ltd. signature and Duohui/Huabao metadata. SHA-256: ' + $vendorHash
+        }
+        elseif ($hashError) {
+            'The exact Duohui uninstaller path exists, but its SHA-256 identity could not be read safely. ' + $hashError
+        }
+        else {
+            'The exact Duohui uninstaller path exists, but it lacks a confirmed dhpingbao root, the required valid publisher signature and Duohui/Huabao metadata, or a valid SHA-256 identity.'
+        }
+        Add-Finding $findings (New-Finding -Kind 'VendorUninstaller' -Name 'Duohui vendor uninstaller' `
+            -Target $duohuiVendorPath -Confidence $(if ($vendorConfirmed) { 'Confirmed' } else { 'ReviewOnly' }) `
+            -Reason $vendorReason -RemovalType $(if ($vendorConfirmed) { 'VendorUninstaller' } else { 'None' }) `
+            -ValueName $vendorHash)
+    }
+
     if ($tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
         $tempFiles = @()
         $tempFiles += @(Get-ChildItem -LiteralPath $tempRoot -File -Filter '360greencore.cab' -ErrorAction SilentlyContinue)
@@ -1032,8 +1386,10 @@ function Get-360Findings {
         }
     }
 
+    $currentUserUninstallRoot = $currentUserRegistryRoot + '\Software\Microsoft\Windows\CurrentVersion\Uninstall'
+    $duohuiOrphanedRecord = $false
     $uninstallRoots = @(
-        ($currentUserRegistryRoot + '\Software\Microsoft\Windows\CurrentVersion\Uninstall'),
+        $currentUserUninstallRoot,
         'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
         'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
     )
@@ -1043,9 +1399,13 @@ function Get-360Findings {
             $properties = Get-360CleanupRegistryValues $key.PSPath
             $displayName = [string](Get-PropertyValue $properties 'DisplayName')
             $publisher = [string](Get-PropertyValue $properties 'Publisher')
+            $isExactDuohuiRecord = $root.Equals($currentUserUninstallRoot, [StringComparison]::OrdinalIgnoreCase) -and
+                (Get-RegistryKeyLeafName $key).Equals('duohuipingbao', [StringComparison]::OrdinalIgnoreCase) -and
+                $displayName.Equals('duohuipingbao', [StringComparison]::OrdinalIgnoreCase) -and
+                $publisher.Equals('duohuipingbao', [StringComparison]::OrdinalIgnoreCase)
             $knownProductName = $displayName -match '(?i)^(360安全卫士|360 Total Security|360杀毒|360安全浏览器|360se|360极速浏览器|360ChromeX|360Chrome|360软件管家|360压缩|360驱动大师|360游戏大厅|360桌面助手|360壁纸|360画报|多绘屏保)(\s|$|[0-9])'
             $knownPublisher = $publisher -match '(?i)360\.cn|360安全中心|Qihoo|Qihu|奇虎'
-            if (-not ($knownProductName -or $knownPublisher)) { continue }
+            if (-not ($isExactDuohuiRecord -or $knownProductName -or $knownPublisher)) { continue }
 
             $locationState = Get-FileReferenceState ([string](Get-PropertyValue $properties 'InstallLocation'))
             $uninstallState = Get-FileReferenceState `
@@ -1072,10 +1432,58 @@ function Get-360Findings {
             else {
                 'There is not enough evidence to prove this uninstall record is orphaned; inspect its file references before registry cleanup.'
             }
-            Add-Finding $findings (New-Finding -Kind 'InstalledProduct' -Name $displayName -Target $key.PSPath `
+            $productFinding = New-Finding -Kind 'InstalledProduct' -Name $displayName -Target $key.PSPath `
                 -Confidence $(if ($orphaned) { 'Confirmed' } else { 'ReviewOnly' }) `
-                -Reason $reason -RemovalType $(if ($orphaned) { 'RegistryKey' } else { 'None' }))
+                -Reason $reason -RemovalType $(if ($orphaned) { 'RegistryKey' } else { 'None' })
+            if ($orphaned) {
+                $productIdentity = Get-360CleanupNonPathIdentityState -Finding $productFinding `
+                    -ObservedIdentity $properties
+                $productFinding = Set-360CleanupFindingIdentityFingerprint -Finding $productFinding `
+                    -IdentityState $productIdentity
+            }
+            if ($isExactDuohuiRecord -and $productFinding.Confidence -eq 'Confirmed') {
+                $duohuiOrphanedRecord = $true
+            }
+            Add-Finding $findings $productFinding
         }
+    }
+
+    $duohuiRegistryResidues = New-Object System.Collections.ArrayList
+    $currentUserSoftwareRoot = $currentUserRegistryRoot + '\Software'
+    $directDuohuiResidue = $currentUserSoftwareRoot + '\duohuipingbao'
+    if (Test-360CleanupRegistryPath $directDuohuiResidue) {
+        [void]$duohuiRegistryResidues.Add($directDuohuiResidue)
+    }
+    if (Test-360CleanupRegistryPath $currentUserSoftwareRoot) {
+        foreach ($parentKey in @(Get-360CleanupRegistrySubKeys $currentUserSoftwareRoot)) {
+            $parentName = Get-RegistryKeyLeafName $parentKey
+            if ($parentName -notmatch '^\{[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}\}$') { continue }
+            $parentPropertyNames = @($parentKey.PSObject.Properties.Name)
+            if ($parentPropertyNames -notcontains 'PSPath' -or
+                [string]::IsNullOrWhiteSpace([string]$parentKey.PSPath)) { continue }
+            $guidDuohuiResidue = ([string]$parentKey.PSPath).TrimEnd('\') + '\duohuipingbao'
+            if (Test-360CleanupRegistryPath $guidDuohuiResidue) {
+                [void]$duohuiRegistryResidues.Add($guidDuohuiResidue)
+            }
+        }
+    }
+    foreach ($residue in @($duohuiRegistryResidues | Sort-Object -Unique)) {
+        $residueFinding = New-Finding -Kind 'RegistryResidue' -Name 'Duohui registry residue' `
+            -Target ([string]$residue) -Confidence $(if ($duohuiOrphanedRecord) { 'Confirmed' } else { 'ReviewOnly' }) `
+            -Reason $(if ($duohuiOrphanedRecord) {
+                'Exact Duohui residue paired with the proven orphan HKCU duohuipingbao uninstall record.'
+            } else {
+                'Exact Duohui residue found without a proven orphan HKCU duohuipingbao uninstall record; review only.'
+            }) -RemovalType $(if ($duohuiOrphanedRecord) { 'RegistryKey' } else { 'None' })
+        if ($duohuiOrphanedRecord) {
+            try { $residueRootProperties = Get-360CleanupRegistryValuesStrict ([string]$residue) }
+            catch { $residueRootProperties = $null }
+            $residueIdentity = Get-360CleanupNonPathIdentityState -Finding $residueFinding `
+                -ObservedIdentity $residueRootProperties
+            $residueFinding = Set-360CleanupFindingIdentityFingerprint -Finding $residueFinding `
+                -IdentityState $residueIdentity
+        }
+        Add-Finding $findings $residueFinding
     }
 
     $confirmedRoots = Get-ConfirmedPathRoots @($findings)
@@ -1097,9 +1505,13 @@ function Get-360Findings {
                 if ($executable -and (Test-IsUnderPath $executable $confirmedRoot)) { $matchedRoot = $confirmedRoot; break }
             }
             if ($matchedRoot) {
-                Add-Finding $findings (New-Finding -Kind 'Startup' -Name $property.Name -Target $runRoot `
+                $startupFinding = New-Finding -Kind 'Startup' -Name $property.Name -Target $runRoot `
                     -Confidence 'Confirmed' -Reason ('Startup executable is under confirmed target: ' + $matchedRoot) `
-                    -RemovalType 'RegistryValue' -ValueName $property.Name)
+                    -RemovalType 'RegistryValue' -ValueName $property.Name
+                $startupIdentity = Get-360CleanupNonPathIdentityState -Finding $startupFinding `
+                    -ObservedIdentity $property
+                Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $startupFinding `
+                    -IdentityState $startupIdentity)
             }
             elseif ($property.Name -match '(?i)360|SoftMgr|huabao|duohuipingbao|sesvc' -or
                 ($executable -and $executable -match '(?i)360|SoftMgr|huabao|duohuipingbao|sesvc')) {
@@ -1113,12 +1525,17 @@ function Get-360Findings {
     $desktopKey = $currentUserRegistryRoot + '\Control Panel\Desktop'
     if (Test-360CleanupRegistryPath $desktopKey) {
         $desktop = Get-360CleanupRegistryValues $desktopKey
+        $screenSaverProperty = $desktop.PSObject.Properties['SCRNSAVE.EXE']
         $screenSaver = Get-NormalPath ([string](Get-PropertyValue $desktop 'SCRNSAVE.EXE'))
         foreach ($confirmedRoot in $confirmedRoots) {
             if ($screenSaver -and (Test-IsUnderPath $screenSaver $confirmedRoot)) {
-                Add-Finding $findings (New-Finding -Kind 'ScreenSaver' -Name 'SCRNSAVE.EXE' -Target $desktopKey `
+                $screenSaverFinding = New-Finding -Kind 'ScreenSaver' -Name 'SCRNSAVE.EXE' -Target $desktopKey `
                     -Confidence 'Confirmed' -Reason 'Screen saver setting points under a confirmed target.' `
-                    -RemovalType 'RegistryValue' -ValueName 'SCRNSAVE.EXE')
+                    -RemovalType 'RegistryValue' -ValueName 'SCRNSAVE.EXE'
+                $screenSaverIdentity = Get-360CleanupNonPathIdentityState -Finding $screenSaverFinding `
+                    -ObservedIdentity $screenSaverProperty
+                Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $screenSaverFinding `
+                    -IdentityState $screenSaverIdentity)
                 break
             }
         }
@@ -1135,9 +1552,13 @@ function Get-360Findings {
                 if ($matchedRoot) { break }
             }
             if ($matchedRoot) {
-                Add-Finding $findings (New-Finding -Kind 'ScheduledTask' -Name $task.TaskName -Target $task.TaskName `
+                $taskFinding = New-Finding -Kind 'ScheduledTask' -Name $task.TaskName -Target $task.TaskName `
                     -Confidence 'Confirmed' -Reason 'Task action points under an exact confirmed target.' `
-                    -RemovalType 'Task' -ValueName $task.TaskPath)
+                    -RemovalType 'Task' -ValueName $task.TaskPath
+                $taskIdentity = Get-360CleanupNonPathIdentityState -Finding $taskFinding `
+                    -ObservedIdentity $task
+                Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $taskFinding `
+                    -IdentityState $taskIdentity)
             }
             elseif ($task.TaskName -match '(?i)360|SoftMgr|huabao|duohuipingbao') {
                 Add-Finding $findings (New-Finding -Kind 'ScheduledTask' -Name $task.TaskName -Target $task.TaskName `
@@ -1156,9 +1577,13 @@ function Get-360Findings {
         $confirmedToolboxService = $softMgrConfirmed -and $service.Name -eq 'WinToolBoxUpdateSrv' -and
             $toolboxRoot -and $executable -and $executable.Equals((Get-NormalPath (Join-Path $toolboxRoot 'winToolBoxSrv.exe')), [StringComparison]::OrdinalIgnoreCase)
         if ($matchedRoot -or $confirmedToolboxService) {
-            Add-Finding $findings (New-Finding -Kind 'Service' -Name $service.Name -Target $service.Name `
+            $serviceFinding = New-Finding -Kind 'Service' -Name $service.Name -Target $service.Name `
                 -Confidence 'Confirmed' -Reason 'Service executable is a confirmed target or confirmed mixed-bundle updater.' `
-                -RemovalType 'Service')
+                -RemovalType 'Service'
+            $serviceIdentity = Get-360CleanupNonPathIdentityState -Finding $serviceFinding `
+                -ObservedIdentity $service
+            Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $serviceFinding `
+                -IdentityState $serviceIdentity)
         }
         elseif ($service.Name -match '(?i)360|SoftMgr|huabao|duohuipingbao' -or
             ($executable -and $executable -match '(?i)(?:^|[\\/])360[^\\/]*(?:[\\/]|$)|SoftMgr|huabao|duohuipingbao')) {
@@ -1802,6 +2227,529 @@ function Add-Action {
     })
 }
 
+function Join-360CleanupStableFields {
+    param([object[]]$Fields)
+
+    $builder = New-Object Text.StringBuilder
+    foreach ($field in @($Fields)) {
+        $text = if ($null -eq $field) { '' } else { [string]$field }
+        [void]$builder.Append($text.Length)
+        [void]$builder.Append(':')
+        [void]$builder.Append($text)
+    }
+    return $builder.ToString()
+}
+
+function ConvertTo-360CleanupStableValue {
+    param([object]$Value)
+
+    if ($null -eq $Value) { return 'NULL' }
+    $typeName = $Value.GetType().FullName
+    if ($Value -is [byte[]]) {
+        return Join-360CleanupStableFields @($typeName, [Convert]::ToBase64String([byte[]]$Value))
+    }
+    if ($Value -is [Array]) {
+        $items = New-Object System.Collections.ArrayList
+        foreach ($item in $Value) {
+            [void]$items.Add((ConvertTo-360CleanupStableValue $item))
+        }
+        return Join-360CleanupStableFields @($typeName, (Join-360CleanupStableFields @($items)))
+    }
+    if ($Value -is [DateTime]) {
+        return Join-360CleanupStableFields @(
+            $typeName,
+            ([DateTime]$Value).ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        )
+    }
+    $text = if ($Value -is [IFormattable]) {
+        ([IFormattable]$Value).ToString($null, [Globalization.CultureInfo]::InvariantCulture)
+    }
+    else { [string]$Value }
+    return Join-360CleanupStableFields @($typeName, $text)
+}
+
+function Get-360CleanupTextSha256 {
+    param([string]$Text)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes([string]$Text)
+        return ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '')
+    }
+    finally { $sha256.Dispose() }
+}
+
+function Get-360CleanupStablePropertyToken {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object) { return Join-360CleanupStableFields @($Name, 'MISSING') }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return Join-360CleanupStableFields @($Name, 'MISSING') }
+    return Join-360CleanupStableFields @(
+        $Name,
+        [string]$property.TypeNameOfValue,
+        (ConvertTo-360CleanupStableValue $property.Value)
+    )
+}
+
+function Get-360CleanupRegistryValuesStrict {
+    param([string]$Path)
+
+    return Invoke-360CleanupRuntimeProvider -Name 'RegistryValues' -ArgumentList @($Path) -Default {
+        param($RegistryPath)
+        Get-ItemProperty -LiteralPath $RegistryPath -ErrorAction Stop
+    }
+}
+
+function Get-360CleanupRegistrySubKeysStrict {
+    param([string]$Path)
+
+    return @(Invoke-360CleanupRuntimeProvider -Name 'RegistrySubKeys' -ArgumentList @($Path) -Default {
+        param($RegistryPath)
+        Get-ChildItem -LiteralPath $RegistryPath -ErrorAction Stop
+    })
+}
+
+function Get-360CleanupScheduledTasksStrict {
+    return @(Invoke-360CleanupRuntimeProvider -Name 'ScheduledTasks' -Default {
+        Get-ScheduledTask -ErrorAction Stop
+    })
+}
+
+function Get-360CleanupServicesStrict {
+    return @(Invoke-360CleanupRuntimeProvider -Name 'Services' -Default {
+        Get-CimInstance Win32_Service -ErrorAction Stop
+    })
+}
+
+function Get-360CleanupExactServiceController {
+    param([string]$Name)
+
+    $matches = @(Get-Service -ErrorAction Stop | Where-Object {
+        $candidateName = [string]$_.Name
+        $candidateName -and $candidateName.Equals($Name, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($matches.Count -gt 1) {
+        throw "The exact service-controller query was not unique: $Name"
+    }
+    if ($matches.Count -eq 0) { return $null }
+    return $matches[0]
+}
+
+function Get-360CleanupProcessesStrict {
+    return @(Invoke-360CleanupRuntimeProvider -Name 'Processes' -Default {
+        Get-CimInstance Win32_Process -ErrorAction Stop
+    })
+}
+
+function Get-360CleanupRegistryKeyStableText {
+    param(
+        [string]$Path,
+        [object]$TraversalState,
+        [object]$RootProperties = $null,
+        [switch]$UseRootProperties
+    )
+
+    $TraversalState.Keys++
+    if ($TraversalState.Keys -gt 256) {
+        throw 'Registry-key identity exceeded the 256-key safety limit.'
+    }
+
+    $properties = if ($UseRootProperties) {
+        $RootProperties
+    }
+    else {
+        Get-360CleanupRegistryValuesStrict $Path
+    }
+    if ($null -eq $properties) {
+        throw "Registry-key identity provider returned no value snapshot: $Path"
+    }
+    $providerMetadataNames = @('PSPath', 'PSParentPath', 'PSChildName', 'PSDrive', 'PSProvider')
+    [string[]]$valueNames = @($properties.PSObject.Properties | Where-Object {
+        $providerMetadataNames -notcontains $_.Name
+    } | ForEach-Object { [string]$_.Name })
+    [Array]::Sort($valueNames, [StringComparer]::OrdinalIgnoreCase)
+    $valueTokens = New-Object System.Collections.ArrayList
+    foreach ($name in $valueNames) {
+        [void]$valueTokens.Add((Get-360CleanupStablePropertyToken -Object $properties -Name $name))
+    }
+
+    $children = @(Get-360CleanupRegistrySubKeysStrict $Path)
+    $childPaths = @{}
+    $childNames = New-Object System.Collections.ArrayList
+    foreach ($child in $children) {
+        $childPath = [string](Get-PropertyValue $child 'PSPath')
+        $childName = Get-RegistryKeyLeafName $child
+        if ([string]::IsNullOrWhiteSpace($childPath) -or
+            [string]::IsNullOrWhiteSpace($childName)) {
+            throw "Registry-key identity provider returned an incomplete child key: $Path"
+        }
+        if ($childPaths.ContainsKey($childName)) {
+            throw "Registry-key identity provider returned a duplicate child key: $Path"
+        }
+        $childPaths[$childName] = $childPath
+        [void]$childNames.Add($childName)
+    }
+    [string[]]$orderedChildNames = @($childNames)
+    [Array]::Sort($orderedChildNames, [StringComparer]::OrdinalIgnoreCase)
+    $childTokens = New-Object System.Collections.ArrayList
+    foreach ($childName in $orderedChildNames) {
+        $childText = Get-360CleanupRegistryKeyStableText -Path ([string]$childPaths[$childName]) `
+            -TraversalState $TraversalState
+        [void]$childTokens.Add((Join-360CleanupStableFields @($childName, $childText)))
+    }
+
+    return Join-360CleanupStableFields @(
+        (Join-360CleanupStableFields @($valueTokens)),
+        (Join-360CleanupStableFields @($childTokens))
+    )
+}
+
+function Test-TextReferencesDuohuiPath {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    $Text = ([Environment]::ExpandEnvironmentVariables($Text)).Replace('/', '\')
+    if ($Text -match '(?i)(?:^|\\)(?:dhpingbao|duohuipingbao|huabao_tmp)(?:\\|$)') {
+        return $true
+    }
+    foreach ($root in @(Get-DuohuiCleanupPathRoots)) {
+        $comparableRoot = ([string]$root).Replace('/', '\')
+        if ($Text.IndexOf($comparableRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+
+function Test-IsPathIndependentFromDuohui {
+    param([string]$Path)
+
+    $normal = Get-NormalPath $Path
+    if (-not $normal) { return $false }
+    foreach ($root in @(Get-DuohuiCleanupPathRoots)) {
+        if (Test-IsUnderPath $normal $root) { return $false }
+    }
+    return $true
+}
+
+function Get-360CleanupServiceIdentityStateFromSnapshot {
+    param(
+        [object]$Finding,
+        [object]$Service
+    )
+
+    if ($null -eq $Service) { throw 'The service identity query returned no snapshot.' }
+    $requiredProperties = @('Name', 'PathName', 'StartName', 'ServiceType', 'StartMode')
+    foreach ($propertyName in $requiredProperties) {
+        if ($null -eq $Service.PSObject.Properties[$propertyName]) {
+            throw "The service identity snapshot is missing $propertyName."
+        }
+    }
+    $serviceName = [string](Get-PropertyValue $Service 'Name')
+    if ([string]::IsNullOrWhiteSpace($serviceName) -or
+        -not $serviceName.Equals([string]$Finding.Target, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The service identity snapshot does not match the finding target.'
+    }
+
+    $tokens = foreach ($propertyName in $requiredProperties) {
+        Get-360CleanupStablePropertyToken -Object $Service -Name $propertyName
+    }
+    $pathName = [string](Get-PropertyValue $Service 'PathName')
+    $executable = Get-CommandExecutable $pathName
+    return [pscustomobject]@{
+        State = 'Present'
+        Fingerprint = Get-360CleanupTextSha256 (Join-360CleanupStableFields @($tokens))
+        Independent = [bool]((Test-IsPathIndependentFromDuohui $executable) -and
+            -not (Test-TextReferencesDuohuiPath $pathName))
+        Detail = ''
+    }
+}
+
+function Get-360CleanupTaskIdentityStateFromSnapshot {
+    param(
+        [object]$Finding,
+        [object]$Task
+    )
+
+    if ($null -eq $Task) { throw 'The scheduled-task identity query returned no snapshot.' }
+    foreach ($propertyName in @('TaskName', 'TaskPath', 'Actions')) {
+        if ($null -eq $Task.PSObject.Properties[$propertyName]) {
+            throw "The scheduled-task identity snapshot is missing $propertyName."
+        }
+    }
+    $taskName = [string](Get-PropertyValue $Task 'TaskName')
+    $taskPath = [string](Get-PropertyValue $Task 'TaskPath')
+    if ([string]::IsNullOrWhiteSpace($taskName) -or [string]::IsNullOrWhiteSpace($taskPath) -or
+        -not $taskName.Equals([string]$Finding.Target, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $taskPath.Equals([string]$Finding.ValueName, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The scheduled-task identity snapshot does not match the finding target.'
+    }
+
+    $actionsProperty = $Task.PSObject.Properties['Actions']
+    if ($null -eq $actionsProperty.Value) {
+        throw 'The scheduled-task identity snapshot did not return actions.'
+    }
+    $actionTokens = New-Object System.Collections.ArrayList
+    $independent = $true
+    $actionIndex = 0
+    foreach ($action in @($actionsProperty.Value)) {
+        if ($null -eq $action) { throw 'The scheduled-task identity snapshot contains a null action.' }
+        foreach ($propertyName in @('Execute', 'Arguments', 'WorkingDirectory')) {
+            if ($null -eq $action.PSObject.Properties[$propertyName]) {
+                throw "The scheduled-task action identity snapshot is missing $propertyName."
+            }
+        }
+        $execute = [string](Get-PropertyValue $action 'Execute')
+        $arguments = [string](Get-PropertyValue $action 'Arguments')
+        $workingDirectory = [string](Get-PropertyValue $action 'WorkingDirectory')
+        [void]$actionTokens.Add((Join-360CleanupStableFields @(
+            $actionIndex,
+            (Get-360CleanupStablePropertyToken -Object $action -Name 'Execute'),
+            (Get-360CleanupStablePropertyToken -Object $action -Name 'Arguments'),
+            (Get-360CleanupStablePropertyToken -Object $action -Name 'WorkingDirectory')
+        )))
+        if (-not (Test-IsPathIndependentFromDuohui $execute) -or
+            (Test-TextReferencesDuohuiPath $arguments) -or
+            (Test-TextReferencesDuohuiPath $workingDirectory)) {
+            $independent = $false
+        }
+        $actionIndex++
+    }
+    $taskText = Join-360CleanupStableFields @(
+        (Get-360CleanupStablePropertyToken -Object $Task -Name 'TaskName'),
+        (Get-360CleanupStablePropertyToken -Object $Task -Name 'TaskPath'),
+        (Join-360CleanupStableFields @($actionTokens))
+    )
+    return [pscustomobject]@{
+        State = 'Present'; Fingerprint = Get-360CleanupTextSha256 $taskText
+        Independent = [bool]$independent; Detail = ''
+    }
+}
+
+function Get-360CleanupRegistryValueIdentityStateFromSnapshot {
+    param(
+        [object]$Finding,
+        [object]$Property
+    )
+
+    if ($null -eq $Property) { throw 'The registry-value identity query returned no snapshot.' }
+    foreach ($propertyName in @('Name', 'TypeNameOfValue', 'Value')) {
+        if ($null -eq $Property.PSObject.Properties[$propertyName]) {
+            throw "The registry-value identity snapshot is missing $propertyName."
+        }
+    }
+    $valueName = [string](Get-PropertyValue $Property 'Name')
+    if ([string]::IsNullOrWhiteSpace($valueName) -or
+        -not $valueName.Equals([string]$Finding.ValueName, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The registry-value identity snapshot does not match the finding target.'
+    }
+
+    $value = Get-PropertyValue $Property 'Value'
+    $token = Join-360CleanupStableFields @(
+        $valueName,
+        [string](Get-PropertyValue $Property 'TypeNameOfValue'),
+        (ConvertTo-360CleanupStableValue $value)
+    )
+    $valueText = [string]$value
+    $executable = Get-CommandExecutable $valueText
+    return [pscustomobject]@{
+        State = 'Present'; Fingerprint = Get-360CleanupTextSha256 $token
+        Independent = [bool]((Test-IsPathIndependentFromDuohui $executable) -and
+            -not (Test-TextReferencesDuohuiPath $valueText)); Detail = ''
+    }
+}
+
+function Get-360CleanupRegistryKeyIdentityStateFromSnapshot {
+    param(
+        [object]$Finding,
+        [object]$RootProperties
+    )
+
+    if ($null -eq $RootProperties) { throw 'The registry-key identity query returned no root snapshot.' }
+    $traversalState = [pscustomobject]@{ Keys = 0 }
+    $keyText = Get-360CleanupRegistryKeyStableText -Path ([string]$Finding.Target) `
+        -TraversalState $traversalState -RootProperties $RootProperties -UseRootProperties
+    return [pscustomobject]@{
+        State = 'Present'; Fingerprint = Get-360CleanupTextSha256 $keyText
+        Independent = $false; Detail = ''
+    }
+}
+
+function Get-360CleanupNonPathIdentityState {
+    param(
+        [object]$Finding,
+        [object]$ObservedIdentity = $null
+    )
+
+    $useObservedIdentity = $PSBoundParameters.ContainsKey('ObservedIdentity')
+    try {
+        switch ([string]$Finding.RemovalType) {
+            'Service' {
+                if ($useObservedIdentity) {
+                    return Get-360CleanupServiceIdentityStateFromSnapshot -Finding $Finding -Service $ObservedIdentity
+                }
+                $matches = @(Get-360CleanupServicesStrict | Where-Object {
+                    $name = [string](Get-PropertyValue $_ 'Name')
+                    $name -and $name.Equals([string]$Finding.Target, [StringComparison]::OrdinalIgnoreCase)
+                })
+                if ($matches.Count -eq 0) {
+                    return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Independent = $false; Detail = '' }
+                }
+                if ($matches.Count -ne 1) { throw 'The service identity query was not unique.' }
+                return Get-360CleanupServiceIdentityStateFromSnapshot -Finding $Finding -Service $matches[0]
+            }
+            'Task' {
+                if ($useObservedIdentity) {
+                    return Get-360CleanupTaskIdentityStateFromSnapshot -Finding $Finding -Task $ObservedIdentity
+                }
+                $matches = @(Get-360CleanupScheduledTasksStrict | Where-Object {
+                    $name = [string](Get-PropertyValue $_ 'TaskName')
+                    $path = [string](Get-PropertyValue $_ 'TaskPath')
+                    $name -and $path -and
+                        $name.Equals([string]$Finding.Target, [StringComparison]::OrdinalIgnoreCase) -and
+                        $path.Equals([string]$Finding.ValueName, [StringComparison]::OrdinalIgnoreCase)
+                })
+                if ($matches.Count -eq 0) {
+                    return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Independent = $false; Detail = '' }
+                }
+                if ($matches.Count -ne 1) { throw 'The scheduled-task identity query was not unique.' }
+                return Get-360CleanupTaskIdentityStateFromSnapshot -Finding $Finding -Task $matches[0]
+            }
+            'RegistryValue' {
+                if ($useObservedIdentity) {
+                    return Get-360CleanupRegistryValueIdentityStateFromSnapshot -Finding $Finding -Property $ObservedIdentity
+                }
+                if (-not (Test-360CleanupRegistryPath ([string]$Finding.Target))) {
+                    return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Independent = $false; Detail = '' }
+                }
+                $properties = Get-360CleanupRegistryValuesStrict ([string]$Finding.Target)
+                if ($null -eq $properties) { throw 'The registry-value identity query returned no key snapshot.' }
+                $matches = @($properties.PSObject.Properties | Where-Object {
+                    $_.Name.Equals([string]$Finding.ValueName, [StringComparison]::OrdinalIgnoreCase)
+                })
+                if ($matches.Count -eq 0) {
+                    return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Independent = $false; Detail = '' }
+                }
+                if ($matches.Count -ne 1) { throw 'The registry-value identity query was not unique.' }
+                return Get-360CleanupRegistryValueIdentityStateFromSnapshot -Finding $Finding -Property $matches[0]
+            }
+            'RegistryKey' {
+                if ($useObservedIdentity) {
+                    return Get-360CleanupRegistryKeyIdentityStateFromSnapshot -Finding $Finding `
+                        -RootProperties $ObservedIdentity
+                }
+                if (-not (Test-360CleanupRegistryPath ([string]$Finding.Target))) {
+                    return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Independent = $false; Detail = '' }
+                }
+                $rootProperties = Get-360CleanupRegistryValuesStrict ([string]$Finding.Target)
+                return Get-360CleanupRegistryKeyIdentityStateFromSnapshot -Finding $Finding `
+                    -RootProperties $rootProperties
+            }
+            default { throw "Unsupported post-vendor identity type: $($Finding.RemovalType)" }
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            State = 'Unreadable'; Fingerprint = ''; Independent = $false
+            Detail = $_.Exception.Message
+        }
+    }
+}
+
+function Set-360CleanupFindingIdentityFingerprint {
+    param(
+        [object]$Finding,
+        [object]$IdentityState = $null
+    )
+
+    $identity = if ($PSBoundParameters.ContainsKey('IdentityState')) {
+        $IdentityState
+    }
+    else {
+        Get-360CleanupNonPathIdentityState $Finding
+    }
+    if ($identity.State -eq 'Present' -and
+        [string]$identity.Fingerprint -match '^[0-9A-F]{64}$') {
+        $Finding.IdentityFingerprint = [string]$identity.Fingerprint
+        return $Finding
+    }
+
+    $Finding.Confidence = 'ReviewOnly'
+    $Finding.RemovalType = 'None'
+    $Finding.IdentityFingerprint = ''
+    $detail = if ($identity.Detail) { ' ' + [string]$identity.Detail } else { '' }
+    $Finding.Reason = ([string]$Finding.Reason) +
+        ' Exact identity fingerprint could not be captured; automatic removal is disabled.' + $detail
+    return $Finding
+}
+
+function Get-360CleanupPostVendorDisposition {
+    param(
+        [object]$Finding,
+        [object]$Before,
+        [bool]$VendorPending
+    )
+
+    $after = Get-360CleanupNonPathIdentityState $Finding
+    if ($after.State -eq 'Unreadable') {
+        return [pscustomobject]@{
+            State = 'Failed'
+            Detail = 'ReasonCode=PostVendorIdentityUnreadable; The exact target identity could not be re-read, so mutation was skipped. ' + $after.Detail
+        }
+    }
+    if ($after.State -eq 'Absent') {
+        return [pscustomobject]@{
+            State = 'AlreadyAbsent'; Detail = 'The exact target was already absent after the vendor-uninstaller phase.'
+        }
+    }
+    if ($null -eq $Before -or $Before.State -ne 'Present' -or
+        -not ([string]$after.Fingerprint).Equals([string]$Before.Fingerprint, [StringComparison]::Ordinal)) {
+        return [pscustomobject]@{
+            State = 'Failed'
+            Detail = 'ReasonCode=PostVendorIdentityChanged; The exact target identity changed after the vendor-uninstaller phase, so mutation was skipped.'
+        }
+    }
+    if ($VendorPending -and -not $after.Independent) {
+        return [pscustomobject]@{
+            State = 'Skipped'
+            Detail = 'ReasonCode=VendorUninstallerPending; Independence from the still-running vendor process was not proven, so the target remains unresolved.'
+        }
+    }
+    return [pscustomobject]@{ State = 'Ready'; Detail = '' }
+}
+
+function Get-360CleanupDuohuiProcessState {
+    try {
+        $roots = @(Get-DuohuiCleanupPathRoots)
+        if ($roots.Count -ne 3) {
+            return [pscustomobject]@{ State = 'Unknown'; Detail = 'The complete Duohui path-root set was unavailable.' }
+        }
+        foreach ($process in @(Get-360CleanupProcessesStrict)) {
+            if ($null -eq $process) {
+                return [pscustomobject]@{ State = 'Unknown'; Detail = 'The process provider returned a null entry.' }
+            }
+            $propertyNames = @($process.PSObject.Properties.Name)
+            if ($propertyNames -notcontains 'ExecutablePath') {
+                return [pscustomobject]@{ State = 'Unknown'; Detail = 'The process provider returned an entry without ExecutablePath.' }
+            }
+            $path = Get-NormalPath ([string]$process.ExecutablePath)
+            foreach ($root in $roots) {
+                if ($path -and (Test-IsUnderPath $path $root)) {
+                    return [pscustomobject]@{
+                        State = 'Running'; Detail = 'A process executable still resides under an exact Duohui cleanup root: ' + $path
+                    }
+                }
+            }
+        }
+        return [pscustomobject]@{ State = 'Clear'; Detail = '' }
+    }
+    catch {
+        return [pscustomobject]@{ State = 'Unknown'; Detail = $_.Exception.Message }
+    }
+}
+
 function Remove-ConfirmedFindings {
     param(
         [object[]]$Findings,
@@ -1815,6 +2763,24 @@ function Remove-ConfirmedFindings {
     $pathTargets = @($confirmed | Where-Object { $_.RemovalType -eq 'Path' } | ForEach-Object { $_.Target } | Sort-Object -Unique)
     if ($confirmed.Count -gt 256 -or $pathTargets.Count -gt 64) {
         throw 'Safety limit exceeded: too many confirmed targets. Stop and review the detector output instead of broadening deletion.'
+    }
+
+    $nonPathIdentityBaseline = @{}
+    foreach ($finding in @($confirmed | Where-Object {
+        $_.RemovalType -in @('Service', 'Task', 'RegistryValue', 'RegistryKey')
+    })) {
+        $approvedFingerprint = [string](Get-PropertyValue $finding 'IdentityFingerprint')
+        if ($approvedFingerprint -notmatch '^[0-9A-F]{64}$') {
+            throw "Removal preflight rejected a $($finding.RemovalType) finding without an uppercase identity fingerprint. No changes were made."
+        }
+        $identity = Get-360CleanupNonPathIdentityState $finding
+        if ($identity.State -ne 'Present' -or
+            -not ([string]$identity.Fingerprint).Equals($approvedFingerprint, [StringComparison]::Ordinal)) {
+            $identityDetail = if ($identity.Detail) { ' ' + [string]$identity.Detail } else { '' }
+            throw "Removal preflight could not match the approved $($finding.RemovalType) identity for $($finding.Target). No changes were made.$identityDetail"
+        }
+        $identityKey = Get-FindingResourceKey -Finding $finding -UserSid ''
+        $nonPathIdentityBaseline[$identityKey] = $identity
     }
 
     $safePathTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
@@ -1946,12 +2912,206 @@ function Remove-ConfirmedFindings {
         throw "Final removal preflight could not safely revalidate access-denied target: $target. $($state.Detail) No changes were made."
     }
 
+    $vendorFindings = @($confirmed | Where-Object { $_.RemovalType -eq 'VendorUninstaller' })
+
+    $postVendorMutationBlocked = $false
+    $vendorPending = $false
+    $vendorPendingPathTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $expectedDuohuiRoot = if ($script:KnownFolders.LocalAppData) {
+        Get-NormalPath (Join-Path $script:KnownFolders.LocalAppData 'dhpingbao')
+    }
+    else { $null }
+    foreach ($finding in $vendorFindings) {
+        $vendorResult = $null
+        $pairedRoots = @($confirmed | Where-Object {
+            $_.RemovalType -eq 'Path' -and $expectedDuohuiRoot -and
+            (Get-NormalPath ([string]$_.Target)) -and
+            (Get-NormalPath ([string]$_.Target)).Equals($expectedDuohuiRoot, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ([string]$finding.Kind -ne 'VendorUninstaller' -or $pairedRoots.Count -ne 1) {
+            $vendorResult = [pscustomobject]@{
+                Result = 'Failed'; ExitCode = $null
+                Detail = 'The vendor uninstaller requires exactly one eligible, exact dhpingbao Path finding in the same removal set.'
+            }
+        }
+        elseif (-not $safePathTargets.Contains($expectedDuohuiRoot)) {
+            $vendorResult = [pscustomobject]@{
+                Result = 'Failed'; ExitCode = $null
+                Detail = 'The paired dhpingbao root was not in the fully inspected Safe path set; the vendor uninstaller was not started.'
+            }
+        }
+        else {
+            $pairedRootState = Get-RemovalPathSafetyState $expectedDuohuiRoot
+            if ($pairedRootState.State -ne 'Safe' -or -not $pairedRootState.Exists -or
+                -not $pairedRootState.TreeScanComplete) {
+                $vendorResult = [pscustomobject]@{
+                    Result = 'Failed'; ExitCode = $null
+                    Detail = 'The paired dhpingbao root was not proven Safe by a complete scan immediately before launch.'
+                }
+            }
+            else {
+                $vendorResult = Invoke-ApprovedDuohuiVendorUninstaller $finding
+            }
+        }
+
+        if ([string]$vendorResult.Result -eq 'Success') {
+            $processState = Get-360CleanupDuohuiProcessState
+            if ($processState.State -ne 'Clear') {
+                $vendorResult = [pscustomobject]@{
+                    Result = 'Pending'; ExitCode = $vendorResult.ExitCode
+                    Detail = 'The launched vendor process exited, but completion is not proven because a helper may still be running. It was not terminated. ' + $processState.Detail
+                }
+            }
+        }
+
+        $vendorDetail = [string]$vendorResult.Detail
+        if ($null -ne $vendorResult.ExitCode) {
+            $vendorDetail = ('ExitCode={0}; {1}' -f $vendorResult.ExitCode, $vendorDetail)
+        }
+        Add-Action $actions 'RunVendorUninstaller' ([string]$finding.Target) `
+            ([string]$vendorResult.Result) $vendorDetail
+        if ([string]$vendorResult.Result -eq 'Pending') {
+            $vendorPending = $true
+            foreach ($target in $pathTargets) {
+                if (Test-IsExactDuohuiCleanupPath $target) {
+                    [void]$vendorPendingPathTargets.Add((Get-NormalPath $target))
+                }
+            }
+        }
+    }
+
+    # The vendor process can remove or replace approved leftovers. Revalidate every
+    # path globally before any service, task, registry, process, or path mutation.
+    if ($vendorFindings.Count -gt 0) {
+        foreach ($target in $pathTargets) {
+            $state = Get-RemovalPathSafetyState $target
+            if ($state.State -eq 'Safe' -and $state.TreeScanComplete) {
+                [void]$accessDeniedPathTargets.Remove($target)
+                if (-not $state.Exists) {
+                    [void]$safePathTargets.Remove($target)
+                    [void]$vendorPendingPathTargets.Remove($target)
+                    [void]$unmeasuredPathTargets.Remove($target)
+                    [void]$unresolvedPathTargets.Remove($target)
+                    continue
+                }
+                if ($vendorPendingPathTargets.Contains($target)) {
+                    [void]$safePathTargets.Remove($target)
+                    [void]$unresolvedPathTargets.Add($target)
+                    continue
+                }
+
+                [void]$safePathTargets.Add($target)
+                $isAccountingTarget = @($accountingTargets | Where-Object {
+                    $_.Equals($target, [StringComparison]::OrdinalIgnoreCase)
+                }).Count -gt 0
+                if ($isAccountingTarget -and -not $initialPathStats.ContainsKey($target)) {
+                    try {
+                        $initialPathStats[$target] = Get-RemovalTargetStats $target
+                        [void]$unmeasuredPathTargets.Remove($target)
+                    }
+                    catch {
+                        $measurementError = $_
+                        $measurementState = Get-RemovalPathSafetyState $target
+                        if ($measurementState.State -eq 'AccessDenied' -and
+                            $measurementState.BlockedPathVerifiedNonReparse -and
+                            (Test-IsUnderPath $measurementState.BlockedPath $target)) {
+                            [void]$safePathTargets.Remove($target)
+                            [void]$accessDeniedPathTargets.Add($target)
+                            [void]$observedAccessDeniedPathTargets.Add($target)
+                            [void]$unmeasuredPathTargets.Add($target)
+                            [void]$unresolvedPathTargets.Add($target)
+                            continue
+                        }
+                        $measurementReasonCode = if ($measurementState.State -eq 'ReparsePoint') {
+                            'ReparsePoint'
+                        }
+                        else { 'UnknownInspectionError' }
+                        Add-Action $actions 'PostVendorPathPreflight' $target 'Failed' `
+                            ("ReasonCode=$measurementReasonCode; All subsequent mutations were blocked. " +
+                                $measurementError.Exception.Message + ' ' + $measurementState.Detail)
+                        $postVendorMutationBlocked = $true
+                        break
+                    }
+                }
+                continue
+            }
+            if ($state.State -eq 'AccessDenied' -and $state.BlockedPathVerifiedNonReparse -and
+                (Test-IsUnderPath $state.BlockedPath $state.Path)) {
+                [void]$safePathTargets.Remove($target)
+                [void]$accessDeniedPathTargets.Add($target)
+                [void]$observedAccessDeniedPathTargets.Add($target)
+                [void]$unmeasuredPathTargets.Add($target)
+                [void]$unresolvedPathTargets.Add($target)
+                continue
+            }
+            if ($state.State -eq 'ReparsePoint') {
+                Add-Action $actions 'PostVendorPathPreflight' $target 'Failed' `
+                    ("ReasonCode=ReparsePoint; All subsequent mutations were blocked. BlockedPath=$($state.BlockedPath)")
+                $postVendorMutationBlocked = $true
+                break
+            }
+            Add-Action $actions 'PostVendorPathPreflight' $target 'Failed' `
+                ("ReasonCode=UnknownInspectionError; All subsequent mutations were blocked. $($state.Detail)")
+            $postVendorMutationBlocked = $true
+            break
+        }
+
+        if ($postVendorMutationBlocked) {
+            foreach ($target in $pathTargets) {
+                [void]$unresolvedPathTargets.Add($target)
+            }
+            $safePathTargets.Clear()
+            $accessDeniedPathTargets.Clear()
+            $vendorPendingPathTargets.Clear()
+        }
+        else {
+            foreach ($target in @($vendorPendingPathTargets)) {
+                [void]$safePathTargets.Remove($target)
+                [void]$accessDeniedPathTargets.Remove($target)
+                [void]$unresolvedPathTargets.Add($target)
+                Add-Action $actions 'DeletePath' $target 'Skipped' `
+                    'ReasonCode=VendorUninstallerPending; The vendor process was not terminated, so its related Duohui path sweep was blocked.'
+            }
+        }
+    }
+
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Service' })) {
+        if ($postVendorMutationBlocked) { break }
         try {
-            Stop-Service -Name $finding.Target -Force -ErrorAction SilentlyContinue
+            $identityKey = Get-FindingResourceKey -Finding $finding -UserSid ''
+            $disposition = Get-360CleanupPostVendorDisposition -Finding $finding `
+                -Before $nonPathIdentityBaseline[$identityKey] -VendorPending $vendorPending
+            if ($disposition.State -ne 'Ready') {
+                Add-Action $actions 'DeleteService' $finding.Target `
+                    ([string]$disposition.State) ([string]$disposition.Detail)
+                continue
+            }
+            $serviceController = Get-360CleanupExactServiceController ([string]$finding.Target)
+            if ($null -eq $serviceController) {
+                Add-Action $actions 'DeleteService' $finding.Target 'AlreadyAbsent' `
+                    'The exact service was already absent immediately before the stop request.'
+                continue
+            }
+            $serviceStoppedByCleaner = $false
+            if ([string]$serviceController.Status -ne 'Stopped') {
+                Stop-Service -InputObject $serviceController -ErrorAction Stop
+                $serviceStoppedByCleaner = $true
+            }
+            $deleteDisposition = Get-360CleanupPostVendorDisposition -Finding $finding `
+                -Before $nonPathIdentityBaseline[$identityKey] -VendorPending $vendorPending
+            if ($deleteDisposition.State -ne 'Ready') {
+                $stopDetail = if ($serviceStoppedByCleaner) {
+                    'The approved exact service was stopped by this cleanup run, but it was not deleted. '
+                }
+                else { 'The exact service was already stopped and was not deleted. ' }
+                Add-Action $actions 'DeleteService' $finding.Target `
+                    ([string]$deleteDisposition.State) `
+                    ($stopDetail + [string]$deleteDisposition.Detail)
+                continue
+            }
             $output = & sc.exe delete $finding.Target 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE. $($output.Trim())" }
-            if ($null -ne (Get-Service -Name $finding.Target -ErrorAction SilentlyContinue)) {
+            if ($null -ne (Get-360CleanupExactServiceController ([string]$finding.Target))) {
                 Add-Action $actions 'DeleteService' $finding.Target 'PendingRemoval' `
                     'Windows accepted the delete request, but the service still exists and may require a restart.'
             }
@@ -1963,7 +3123,16 @@ function Remove-ConfirmedFindings {
     }
 
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Task' })) {
+        if ($postVendorMutationBlocked) { break }
         try {
+            $identityKey = Get-FindingResourceKey -Finding $finding -UserSid ''
+            $disposition = Get-360CleanupPostVendorDisposition -Finding $finding `
+                -Before $nonPathIdentityBaseline[$identityKey] -VendorPending $vendorPending
+            if ($disposition.State -ne 'Ready') {
+                Add-Action $actions 'DeleteTask' ($finding.ValueName + $finding.Target) `
+                    ([string]$disposition.State) ([string]$disposition.Detail)
+                continue
+            }
             Unregister-ScheduledTask -TaskName $finding.Target -TaskPath $finding.ValueName -Confirm:$false -ErrorAction Stop
             if ($null -ne (Get-ScheduledTask -TaskName $finding.Target -TaskPath $finding.ValueName -ErrorAction SilentlyContinue)) {
                 throw 'The scheduled task still exists after the unregister request.'
@@ -1974,6 +3143,12 @@ function Remove-ConfirmedFindings {
     }
 
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Process' })) {
+        if ($postVendorMutationBlocked) { break }
+        if ($vendorPending -and -not (Test-IsPathIndependentFromDuohui ([string]$finding.ValueName))) {
+            Add-Action $actions 'StopProcess' ([string]$finding.Target) 'Skipped' `
+                'ReasonCode=VendorUninstallerPending; Independence from the still-running vendor process was not proven, so the process remains unresolved.'
+            continue
+        }
         $processId = 0
         if (-not [int]::TryParse([string]$finding.Target, [ref]$processId)) {
             Add-Action $actions 'StopProcess' ([string]$finding.Target) 'Skipped' 'Approved process finding did not contain a valid PID.'
@@ -1984,7 +3159,16 @@ function Remove-ConfirmedFindings {
     }
 
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'RegistryValue' })) {
+        if ($postVendorMutationBlocked) { break }
         try {
+            $identityKey = Get-FindingResourceKey -Finding $finding -UserSid ''
+            $disposition = Get-360CleanupPostVendorDisposition -Finding $finding `
+                -Before $nonPathIdentityBaseline[$identityKey] -VendorPending $vendorPending
+            if ($disposition.State -ne 'Ready') {
+                Add-Action $actions 'DeleteRegistryValue' ($finding.Target + ' :: ' + $finding.ValueName) `
+                    ([string]$disposition.State) ([string]$disposition.Detail)
+                continue
+            }
             Remove-ItemProperty -LiteralPath $finding.Target -Name $finding.ValueName -Force -ErrorAction Stop
             if ($null -ne (Get-ItemProperty -LiteralPath $finding.Target -Name $finding.ValueName -ErrorAction SilentlyContinue)) {
                 throw 'The registry value still exists after the delete request.'
@@ -1995,7 +3179,16 @@ function Remove-ConfirmedFindings {
     }
 
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'RegistryKey' })) {
+        if ($postVendorMutationBlocked) { break }
         try {
+            $identityKey = Get-FindingResourceKey -Finding $finding -UserSid ''
+            $disposition = Get-360CleanupPostVendorDisposition -Finding $finding `
+                -Before $nonPathIdentityBaseline[$identityKey] -VendorPending $vendorPending
+            if ($disposition.State -ne 'Ready') {
+                Add-Action $actions 'DeleteRegistryKey' $finding.Target `
+                    ([string]$disposition.State) ([string]$disposition.Detail)
+                continue
+            }
             Remove-Item -LiteralPath $finding.Target -Recurse -Force -ErrorAction Stop
             if (Test-Path -LiteralPath $finding.Target) { throw 'The registry key still exists after the delete request.' }
             Add-Action $actions 'DeleteRegistryKey' $finding.Target 'Success'
@@ -2007,6 +3200,7 @@ function Remove-ConfirmedFindings {
     $forceTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
     $accessDeniedDeleteTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
     foreach ($target in @($safePathTargets)) {
+        if ($postVendorMutationBlocked) { break }
         $state = Get-RemovalPathSafetyState $target
         if ($state.State -eq 'Safe') {
             if (-not $state.Exists) { continue }
@@ -2044,7 +3238,7 @@ function Remove-ConfirmedFindings {
     }
 
     $explorerStopped = $false
-    if ($failedTargets.Count -gt 0) {
+    if (-not $postVendorMutationBlocked -and $failedTargets.Count -gt 0) {
         $holders = New-Object System.Collections.ArrayList
         foreach ($candidateProcess in @(Get-Process -ErrorAction SilentlyContinue)) {
             try {
@@ -2138,6 +3332,7 @@ function Remove-ConfirmedFindings {
     }
 
     foreach ($target in @($accessDeniedPathTargets)) {
+        if ($postVendorMutationBlocked) { break }
         [void]$unresolvedPathTargets.Add($target)
         if ($ForceLockedTargets) {
             if ($forceTargets.Add($target)) {
@@ -2154,6 +3349,7 @@ function Remove-ConfirmedFindings {
     # Force processing is deliberately last. Each denied frontier may receive one
     # non-recursive ACL adjustment, followed by a complete scan from the approved root.
     foreach ($target in @($forceTargets)) {
+        if ($postVendorMutationBlocked) { break }
         $repairedFrontiers = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
         $round = 0
         while ($true) {
@@ -2368,7 +3564,7 @@ function Remove-ConfirmedFindings {
         }
     }
 
-    if ($explorerStopped) {
+    if (-not $postVendorMutationBlocked -and $explorerStopped) {
         try {
             Start-Process explorer.exe
             Add-Action $actions 'RestartExplorer' 'explorer.exe' 'Started'
@@ -2382,6 +3578,11 @@ function Remove-ConfirmedFindings {
     $pathTargetsRemoved = 0
     $partiallyCleanedPathTargets = 0
     foreach ($target in $accountingTargets) {
+        if ($postVendorMutationBlocked) {
+            [void]$unmeasuredPathTargets.Add($target)
+            [void]$unresolvedPathTargets.Add($target)
+            continue
+        }
         if (-not $initialPathStats.ContainsKey($target)) { continue }
         $before = $initialPathStats[$target]
 
@@ -2453,9 +3654,18 @@ function Remove-ConfirmedFindings {
     $registryKeyCount = @($actions | Where-Object { $_.Action -eq 'DeleteRegistryKey' -and $_.Result -eq 'Success' }).Count
     $registryValueCount = @($actions | Where-Object { $_.Action -eq 'DeleteRegistryValue' -and $_.Result -eq 'Success' }).Count
     $processCount = @($actions | Where-Object { $_.Action -in @('StopProcess', 'StopModuleHolder') -and $_.Result -eq 'Success' }).Count
+    $vendorSucceededCount = @($actions | Where-Object {
+        $_.Action -eq 'RunVendorUninstaller' -and $_.Result -eq 'Success'
+    }).Count
+    $vendorFailedCount = @($actions | Where-Object {
+        $_.Action -eq 'RunVendorUninstaller' -and $_.Result -eq 'Failed'
+    }).Count
+    $vendorPendingCount = @($actions | Where-Object {
+        $_.Action -eq 'RunVendorUninstaller' -and $_.Result -eq 'Pending'
+    }).Count
     $skippedCount = @($actions | Where-Object { $_.Result -eq 'Skipped' }).Count
     $failedCount = @($actions | Where-Object { $_.Result -eq 'Failed' }).Count
-    $pendingCount = @($actions | Where-Object { $_.Result -eq 'PendingRemoval' }).Count
+    $pendingCount = @($actions | Where-Object { $_.Result -in @('Pending', 'PendingRemoval') }).Count
     $retryAttemptCount = @($actions | Where-Object { $_.Result -eq 'RetryRequired' }).Count
     $aclRepairAttemptCount = @($actions | Where-Object { $_.Action -eq 'RepairPathAcl' }).Count
     $aclRepairFailureCount = @($actions | Where-Object {
@@ -2484,6 +3694,9 @@ function Remove-ConfirmedFindings {
         RegistryKeysRemoved         = $registryKeyCount
         RegistryValuesRemoved       = $registryValueCount
         ProcessesStopped            = $processCount
+        VendorUninstallersSucceeded = $vendorSucceededCount
+        VendorUninstallersFailed    = $vendorFailedCount
+        VendorUninstallersPending   = $vendorPendingCount
         SkippedActions              = $skippedCount
         FailedActions               = $failedCount
         PendingActions              = $pendingCount
@@ -2495,7 +3708,9 @@ function Remove-ConfirmedFindings {
         UnresolvedPathTargets       = $unresolvedPathTargetCount
         PathAccountingComplete      = ($unmeasuredPathTargetCount -eq 0)
         UnmeasuredPathTargets       = $unmeasuredPathTargetCount
-        ImmediateRemainingConfirmed = 0
+        PostVendorMutationBlocked  = [bool]$postVendorMutationBlocked
+        ImmediateRescanComplete    = (-not $postVendorMutationBlocked)
+        ImmediateRemainingConfirmed = $(if ($postVendorMutationBlocked) { $null } else { 0 })
         NoImmediateConfirmedFindings = $false
     }
     if ($null -ne $Summary) {
@@ -2521,30 +3736,48 @@ function Test-RemovalOutcomeRequiresAttention {
         if ($propertyNames -notcontains 'PathAccountingComplete' -or
             $propertyNames -notcontains 'UnresolvedPathTargets' -or
             $propertyNames -notcontains 'AclRepairFailures' -or
-            $propertyNames -notcontains 'FailedActions') {
+            $propertyNames -notcontains 'FailedActions' -or
+            $propertyNames -notcontains 'VendorUninstallersFailed' -or
+            $propertyNames -notcontains 'VendorUninstallersPending' -or
+            $propertyNames -notcontains 'ImmediateRescanComplete' -or
+            $propertyNames -notcontains 'PostVendorMutationBlocked') {
             return $true
         }
         $pathAccountingComplete = [bool]$Summary['PathAccountingComplete']
         $unresolvedPathCount = [int]$Summary['UnresolvedPathTargets']
         $aclRepairFailureCount = [int]$Summary['AclRepairFailures']
         $failedActionCount = [int]$Summary['FailedActions']
+        $vendorFailureCount = [int]$Summary['VendorUninstallersFailed']
+        $vendorPendingCount = [int]$Summary['VendorUninstallersPending']
+        $immediateRescanComplete = [bool]$Summary['ImmediateRescanComplete']
+        $postVendorBlocked = [bool]$Summary['PostVendorMutationBlocked']
     }
     else {
         $propertyNames = @($Summary.PSObject.Properties.Name)
         if ($propertyNames -notcontains 'PathAccountingComplete' -or
             $propertyNames -notcontains 'UnresolvedPathTargets' -or
             $propertyNames -notcontains 'AclRepairFailures' -or
-            $propertyNames -notcontains 'FailedActions') {
+            $propertyNames -notcontains 'FailedActions' -or
+            $propertyNames -notcontains 'VendorUninstallersFailed' -or
+            $propertyNames -notcontains 'VendorUninstallersPending' -or
+            $propertyNames -notcontains 'ImmediateRescanComplete' -or
+            $propertyNames -notcontains 'PostVendorMutationBlocked') {
             return $true
         }
         $pathAccountingComplete = [bool]$Summary.PathAccountingComplete
         $unresolvedPathCount = [int]$Summary.UnresolvedPathTargets
         $aclRepairFailureCount = [int]$Summary.AclRepairFailures
         $failedActionCount = [int]$Summary.FailedActions
+        $vendorFailureCount = [int]$Summary.VendorUninstallersFailed
+        $vendorPendingCount = [int]$Summary.VendorUninstallersPending
+        $immediateRescanComplete = [bool]$Summary.ImmediateRescanComplete
+        $postVendorBlocked = [bool]$Summary.PostVendorMutationBlocked
     }
 
     return (-not $pathAccountingComplete -or $unresolvedPathCount -gt 0 -or
-        $aclRepairFailureCount -gt 0 -or $failedActionCount -gt 0)
+        $aclRepairFailureCount -gt 0 -or $failedActionCount -gt 0 -or
+        $vendorFailureCount -gt 0 -or $vendorPendingCount -gt 0 -or
+        -not $immediateRescanComplete -or $postVendorBlocked)
 }
 
 function Show-RemovalSummary {
@@ -2575,6 +3808,11 @@ function Show-RemovalSummary {
             $Summary.AccessDeniedPathTargets, $Summary.AclRepairAttempts, $Summary.AclRepairFailures)
         Write-Host ("Unresolved path targets: {0}" -f $Summary.UnresolvedPathTargets)
     }
+    if ($summaryPropertyNames -contains 'VendorUninstallersSucceeded') {
+        Write-Host ("Vendor uninstallers succeeded: {0}; failed: {1}; pending: {2}" -f `
+            $Summary.VendorUninstallersSucceeded, $Summary.VendorUninstallersFailed, `
+            $Summary.VendorUninstallersPending)
+    }
     Write-Host ("Fully removed path targets: {0}; partially cleaned path targets: {1}" -f `
         $Summary.PathTargetsRemoved, $Summary.PartiallyCleanedPathTargets)
     if ($summaryPropertyNames -contains 'ApprovedConfirmed') {
@@ -2583,8 +3821,13 @@ function Show-RemovalSummary {
         Write-Host ("Missing since approval: {0}; no longer confirmed: {1}" -f `
             $Summary.MissingSinceApproval, $Summary.NoLongerConfirmed)
     }
-    Write-Host ("Immediate remaining confirmed findings: {0}; no immediate confirmed findings: {1}" -f `
-        $Summary.ImmediateRemainingConfirmed, $Summary.NoImmediateConfirmedFindings)
+    if ($summaryPropertyNames -contains 'ImmediateRescanComplete' -and -not $Summary.ImmediateRescanComplete) {
+        Write-Warning 'Immediate remaining-state rescan was blocked. Findings are the last safe pre-mutation snapshot, not proof of current remaining state.'
+    }
+    else {
+        Write-Host ("Immediate remaining confirmed findings: {0}; no immediate confirmed findings: {1}" -f `
+            $Summary.ImmediateRemainingConfirmed, $Summary.NoImmediateConfirmedFindings)
+    }
     Write-Host ("Path accounting complete: {0}; unmeasured path targets: {1}" -f `
         $Summary.PathAccountingComplete, $Summary.UnmeasuredPathTargets)
     if (-not $Summary.PathAccountingComplete) {
@@ -2645,7 +3888,15 @@ function Show-CleanupReportOutcome {
     if (-not [string]::IsNullOrWhiteSpace($actionText)) { Write-Host ($actionText.TrimEnd()) }
     if ($null -ne $report.Summary) { Show-RemovalSummary $report.Summary }
     Write-Host ''
-    Write-Host 'Remaining findings:' -ForegroundColor Cyan
+    $reportSummaryPropertyNames = @($report.Summary.PSObject.Properties.Name)
+    if ($reportSummaryPropertyNames -contains 'ImmediateRescanComplete' -and
+        -not [bool]$report.Summary.ImmediateRescanComplete) {
+        Write-Warning 'Findings below are the last safe pre-mutation snapshot, not proof of current remaining state.'
+        Write-Host 'Last safe pre-mutation findings:' -ForegroundColor Cyan
+    }
+    else {
+        Write-Host 'Remaining findings:' -ForegroundColor Cyan
+    }
     if (@($report.Findings).Count -eq 0) {
         Write-Host 'No matching 360/Qihoo findings.' -ForegroundColor Green
     }
@@ -2816,15 +4067,24 @@ $approvalComparison = Compare-ApprovedCleanupFindings -Approved @($approvedInput
 $removalSummary = [ordered]@{}
 $actions = @(Remove-ConfirmedFindings -Findings @($approvalComparison.Eligible) -AllowExplorerRestart:$AllowExplorerRestart `
     -ForceLockedTargets:$ForceLockedTargets -Summary $removalSummary)
-$remainingFindings = @(Get-360Findings -IncludeProfiles:$IncludeBrowserProfiles)
-$remainingConfirmed = @($remainingFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
+$remainingFindings = @()
+$remainingConfirmed = $null
+if ([bool]$removalSummary.PostVendorMutationBlocked) {
+    $remainingFindings = @($initialFindings)
+    $removalSummary['ImmediateRescanComplete'] = $false
+}
+else {
+    $remainingFindings = @(Get-360Findings -IncludeProfiles:$IncludeBrowserProfiles)
+    $remainingConfirmed = @($remainingFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
+    $removalSummary['ImmediateRescanComplete'] = $true
+}
 $removalSummary['ApprovedConfirmed'] = [int]$approvalComparison.ApprovedCount
 $removalSummary['EligibleApproved'] = @($approvalComparison.Eligible).Count
 $removalSummary['NewSinceApproval'] = @($approvalComparison.NewSinceApproval).Count
 $removalSummary['MissingSinceApproval'] = @($approvalComparison.MissingSinceApproval).Count
 $removalSummary['NoLongerConfirmed'] = @($approvalComparison.NoLongerConfirmed).Count
 $removalSummary['ImmediateRemainingConfirmed'] = $remainingConfirmed
-$removalSummary['NoImmediateConfirmedFindings'] = ($remainingConfirmed -eq 0)
+$removalSummary['NoImmediateConfirmedFindings'] = ($null -ne $remainingConfirmed -and $remainingConfirmed -eq 0)
 Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $remainingFindings -Actions $actions `
     -Summary $removalSummary -ApprovalContext $approvedInput.Report.ApprovalContext `
     -ApprovedReportHash $ApprovedReportHash -OutcomeRunId $OutcomeRunId `
@@ -2835,14 +4095,24 @@ Write-Host 'Removal actions:' -ForegroundColor Cyan
 $actions | Format-Table Time, Action, Target, Result, Detail -AutoSize -Wrap
 Show-RemovalSummary $removalSummary
 Write-Host ''
-Write-Host 'Remaining findings:' -ForegroundColor Cyan
+if ([bool]$removalSummary.ImmediateRescanComplete) {
+    Write-Host 'Remaining findings:' -ForegroundColor Cyan
+}
+else {
+    Write-Warning 'Findings below are the last safe pre-mutation snapshot, not proof of current remaining state.'
+    Write-Host 'Last safe pre-mutation findings:' -ForegroundColor Cyan
+}
 Show-Findings $remainingFindings
 Write-Host "Report: $ReportPath" -ForegroundColor Cyan
 
 if (Test-RemovalOutcomeRequiresAttention -Summary $removalSummary -RemainingConfirmed $remainingConfirmed) {
+    $remainingConfirmedText = if ([bool]$removalSummary.ImmediateRescanComplete) {
+        [string]$remainingConfirmed
+    }
+    else { 'unknown (immediate rescan blocked)' }
     $attentionMessage = ("Cleanup requires attention: {0} confirmed finding(s) remain, {1} path target(s) are unresolved, " +
         "{2} ACL repair(s) failed, and path accounting complete is {3}. Reboot and run Verify; do not broaden deletion without review.") -f `
-        $remainingConfirmed, $removalSummary.UnresolvedPathTargets, $removalSummary.AclRepairFailures,
+        $remainingConfirmedText, $removalSummary.UnresolvedPathTargets, $removalSummary.AclRepairFailures,
         $removalSummary.PathAccountingComplete
     Write-Warning $attentionMessage
     exit 2

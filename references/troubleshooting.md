@@ -35,7 +35,9 @@ Deleting `%LOCALAPPDATA%\dhpingbao` alone is insufficient when an updater remain
 5. Parent process and executable path of `duohuipingbao.exe` or `huabaosetup.exe`.
 6. Roaming `greencore`/`SoftMgr*` caches and `%TEMP%\360hb_tmp`.
 
-Remove the confirmed source before retrying the payload directory.
+When Scan reports the separately hash-bound `%LOCALAPPDATA%\dhpingbao\huabaosetup.exe` vendor-uninstaller action, prefer that approved action before the deterministic leftover sweep. Execution also requires a valid Authenticode signature whose signer simple name exactly matches the cataloged Qihoo publisher, and that trust is checked again immediately before launch. The cleaner uses only the fixed `/uninstall:byUserName` argument and does not trust an arbitrary registry command line. A changed hash, signer, reparse point, metadata, post-run resource identity, timeout, surviving related process, or launch failure must remain visible as requiring attention.
+
+Remove the confirmed source before retrying the payload directory. If the exact `duohuipingbao` uninstall record becomes orphaned afterward, scan and approve its exact HKCU leftovers separately; do not delete a GUID parent or a broad registry pattern.
 
 ## Orphaned uninstall entry
 

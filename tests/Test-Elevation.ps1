@@ -40,6 +40,7 @@ try {
         $expectedOperations = @(
             'IsAdministrator',
             'Is360File',
+            'IsTrustedDuohuiVendorFile',
             'PathChildren',
             'PathItem',
             'RemovePath',
@@ -51,6 +52,7 @@ try {
             'ScheduledTasks',
             'Services',
             'StartElevatedProcess',
+            'StartVendorUninstaller',
             'StopProcess'
         ) | Sort-Object
         Assert-TestSequenceEqual -Expected $expectedOperations -Actual @($fake.Provider.Keys | Sort-Object) `
