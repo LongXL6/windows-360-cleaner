@@ -157,6 +157,7 @@ function Remove-TestDirectory {
 function New-Fake360CleanupRuntimeProvider {
     param(
         [string[]]$ExistingRegistryPaths = @(),
+        [string[]]$ProductEvidencePaths = @(),
         [hashtable]$RegistrySubKeys = @{},
         [hashtable]$RegistryValues = @{},
         [AllowEmptyCollection()][object[]]$ScheduledTasks = @(),
@@ -171,10 +172,13 @@ function New-Fake360CleanupRuntimeProvider {
     foreach ($path in $ExistingRegistryPaths) { [void]$registryPaths.Add($path) }
     foreach ($path in $RegistrySubKeys.Keys) { [void]$registryPaths.Add([string]$path) }
     foreach ($path in $RegistryValues.Keys) { [void]$registryPaths.Add([string]$path) }
+    $productEvidence = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in $ProductEvidencePaths) { [void]$productEvidence.Add($path) }
 
     $context = [pscustomobject]@{
         Calls                 = $calls
         RegistryPaths         = $registryPaths
+        ProductEvidencePaths  = $productEvidence
         RegistrySubKeysByPath = $RegistrySubKeys
         RegistryValuesByPath  = $RegistryValues
         ScheduledTaskItems    = @($ScheduledTasks)
@@ -185,6 +189,14 @@ function New-Fake360CleanupRuntimeProvider {
     }
 
     $provider = @{
+        Is360File = {
+            param($Context, [string]$Path)
+            [void]$Context.Calls.Add([pscustomobject]@{
+                Operation = 'Is360File'
+                Arguments = @($Path)
+            })
+            return $Context.ProductEvidencePaths.Contains($Path)
+        }
         RegistryPathExists = {
             param($Context, [string]$Path)
             [void]$Context.Calls.Add([pscustomobject]@{

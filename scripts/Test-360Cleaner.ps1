@@ -196,7 +196,7 @@ try {
     finally { $lockStream.Dispose() }
     Remove-Item -LiteralPath $lockedTarget -Recurse -Force
 
-    $browserProfile = Join-Path $script:KnownFolders.LocalAppData '360Chrome'
+    $browserProfile = Join-Path $script:KnownFolders.LocalAppData '360Chrome\Chrome\User Data'
     New-Item -ItemType Directory -Path $browserProfile | Out-Null
     $bookmarks = Join-Path $browserProfile 'Bookmarks'
     Set-Content -LiteralPath $bookmarks -Value 'KEEP-BOOKMARKS'

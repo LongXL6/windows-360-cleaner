@@ -30,13 +30,18 @@ These are strong candidates. Payload paths should contain the expected marker sh
 - `%LOCALAPPDATA%\dhpingbao` (`duohuipingbao.exe` or `huabaosetup.exe`)
 - `%TEMP%\duohuipingbao` (`360hb_tmp`, `duohuipingbao.exe`, or `huabaosetup.exe`)
 - `%TEMP%\huabao_tmp` (`huabaosetup.exe`)
-- `%APPDATA%\360se6` (browser profile; preserve by default)
-- `%APPDATA%\360browser` (browser profile; preserve by default)
+- `%APPDATA%\360se6\Application` (browser program; require local 360/Qihoo file evidence)
+- `%APPDATA%\360se6\User Data` (browser profile; preserve by default)
+- `%APPDATA%\secoresdk\360se6` (Software Manager browser kernel; require local 360/Qihoo file evidence)
+- `%APPDATA%\360browser` (legacy browser profile; preserve by default)
 - `%APPDATA%\360Safe`
 - `%APPDATA%\360GameAssistant`
 - `%APPDATA%\360huabao`
 - `%APPDATA%\360DrvMgrScrSaver`
-- `%LOCALAPPDATA%\360Chrome` (browser profile; preserve by default)
+- `%LOCALAPPDATA%\360Chrome\Chrome\Application` (browser program; require local 360/Qihoo file evidence)
+- `%LOCALAPPDATA%\360Chrome\Chrome\User Data` (browser profile; preserve by default)
+- `%LOCALAPPDATA%\360ChromeX\Chrome\Application` (360 Extreme Browser X program; require local 360/Qihoo file evidence)
+- `%LOCALAPPDATA%\360ChromeX\Chrome\User Data` (browser profile; preserve by default)
 - `%APPDATA%\greencore` (`360greencore.exe`)
 - `%APPDATA%\GreenCore7z` (`360greencore.exe` or paired confirmed SoftMgr evidence)
 - `%APPDATA%\SoftMgr*` (`softmgrsvr.exe`, `SoftMgrUpdate.exe`, or 360 DLL markers)
@@ -84,12 +89,12 @@ Root-level Qihu-signed DLLs can confirm only those exact DLL files. They do not 
 ## Persistence indicators
 
 - Startup value `duohuipingbao` pointing to `...\dhpingbao\duohuipingbao.exe`.
-- Startup value `sesvc` pointing to `...\360se6\...\sesvc.exe`.
+- Startup value `sesvc` pointing to `%APPDATA%\360se6\Application\...\sesvc.exe`.
 - Scheduled tasks named `SoftMgrUpdate*` whose actions point to a confirmed SoftMgr subtree.
 - Service `WinToolBoxUpdateSrv` with the exact validated updater path described above.
 - Screen-saver value `SCRNSAVE.EXE` pointing into a confirmed Huabao/duohuipingbao directory.
 
-Remove persistence only when both the entry and target match.
+Remove persistence only when both the entry and a confirmed target match. A Run/RunOnce name or executable containing `360`, `SoftMgr`, `huabao`, `duohuipingbao`, or `sesvc` remains `ReviewOnly` when the executable is outside confirmed targets.
 
 ## Explorer lock indicators
 
@@ -119,4 +124,3 @@ Files such as `%WINDIR%\System32\drivers\360*.sys` and driver services require r
 - Network ports, dimensions, build numbers, and cryptographic hashes.
 - Windows screen savers: `Bubbles.scr`, `Mystify.scr`, `PhotoScreensaver.scr`, `Ribbons.scr`, and `scrnsave.scr`.
 - Driver Genius (驱动精灵), which is separate from 360驱动大师.
-
