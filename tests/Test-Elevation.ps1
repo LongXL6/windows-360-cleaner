@@ -45,7 +45,8 @@ try {
             'RegistryValues',
             'ScheduledTasks',
             'Services',
-            'StartElevatedProcess'
+            'StartElevatedProcess',
+            'StopProcess'
         )
         Assert-TestSequenceEqual -Expected $expectedOperations -Actual @($fake.Provider.Keys | Sort-Object) `
             -Message 'The fake runtime provider does not implement the complete production seam.'

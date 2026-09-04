@@ -255,6 +255,18 @@ function New-Fake360CleanupRuntimeProvider {
             })
             return [pscustomobject]@{ ExitCode = $Context.ElevatedExitCode }
         }
+        StopProcess = {
+            param($Context, [int]$ProcessId, [string]$ExpectedExecutable)
+            [void]$Context.Calls.Add([pscustomobject]@{
+                Operation = 'StopProcess'
+                Arguments = @($ProcessId, $ExpectedExecutable)
+            })
+            return [pscustomobject]@{
+                Target = ('fixture ({0})' -f $ProcessId)
+                Result = 'Success'
+                Detail = $ExpectedExecutable
+            }
+        }
     }
 
     return [pscustomobject]@{
