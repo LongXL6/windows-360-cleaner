@@ -2,7 +2,13 @@
 
 Read this reference only when removal fails, the payload returns, or another Windows installation is involved.
 
-## Access denied on qcnethelp or SoftMgrExt DLLs
+## Access denied or 360 self-protection
+
+360 self-protection can deny access to `%ProgramFiles%\360\360Safe` or `%ProgramData%\360safe` even for an administrator. Prefer turning off self-protection inside the installed product or running its working vendor uninstaller, then scan again.
+
+When the cleaner can validate the exact target and its parent chain but an ACL prevents complete tree inspection, default removal records that path as `AccessDenied`, skips it, and continues only with other approved targets. The result is incomplete and a later `Verify` should still report the remaining confirmed item. Do not describe the run as a complete cleanup.
+
+`-ForceLockedTargets` is a separately approved last resort. It processes access-denied paths after the normal plan, never uses a broad recursive ACL command on an unverified tree, and performs a complete reparse-point scan after repair. If a junction, symbolic link, mount point, or unknown inspection error appears, that path is not deleted.
 
 Explorer may load `qcnethelp64.dll`, `xhqcnethelp64.dll`, `SoftMgrExt64.dll`, or `analyst.dll` as an extension.
 
@@ -56,4 +62,3 @@ PowerShell's command line may contain `360`, `huabao`, or a target path. Killing
 ## No admin rights
 
 Scan mode still covers current-user locations. Remove mode self-elevates through UAC. If elevation is denied, report that machine-level services, tasks, and Program Files targets were not changed.
-

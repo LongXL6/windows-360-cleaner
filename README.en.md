@@ -76,6 +76,7 @@ The core rule is simple: **an agent may scan and explain automatically, but it m
 | Ambiguity fails safe | Unsupported targets remain `ReviewOnly` |
 | Broad paths rejected | Drive roots, Windows, user profiles, and whole Temp directories cannot become removal targets |
 | Reparse-point defense | Junctions and symbolic links cause the target batch to fail closed |
+| Access denied is not success | Default removal skips only the exact path that cannot be fully inspected, continues other approved targets, and reports that attention is still required |
 | Browser data protected | Profiles require a separate backup and explicit opt-in |
 | Normal apps protected | Loading a target DLL does not automatically authorize force-stopping an unrelated application |
 | Offline Windows is scan-only | No cross-system removal mode exists |
@@ -154,7 +155,7 @@ Removal is permanent and does not use the Recycle Bin. The Scan JSON is the exac
 .\scripts\Invoke-360Cleanup.ps1 -Mode Scan -OfflineWindowsRoot F:\
 ```
 
-Remove can enable browser-profile deletion only when the approved Scan report used `-IncludeBrowserProfiles`; omitting it during Remove safely preserves those profiles. Advanced locked-target options require a fresh explanation and approval; read [troubleshooting](references/troubleshooting.md) first.
+Remove can enable browser-profile deletion only when the approved Scan report used `-IncludeBrowserProfiles`; omitting it during Remove safely preserves those profiles. Advanced locked-target options require a fresh explanation and approval; read [troubleshooting](references/troubleshooting.md) first. For an `AccessDenied` path, `-ForceLockedTargets` runs last, repairs only an exact verified ACL frontier, and rescans the complete approved root before deletion. A reparse point or unknown inspection error still blocks that path.
 
 </details>
 

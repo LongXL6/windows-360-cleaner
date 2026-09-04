@@ -70,7 +70,8 @@ function Set-360CleanupRuntimeProvider {
     $allowedNames = @(
         'RegistryPathExists', 'RegistrySubKeys', 'RegistryValues',
         'ScheduledTasks', 'Services', 'Processes',
-        'IsAdministrator', 'StartElevatedProcess', 'StopProcess', 'Is360File'
+        'IsAdministrator', 'StartElevatedProcess', 'StopProcess', 'Is360File',
+        'PathItem', 'PathChildren', 'RemovePath', 'RepairPathAcl'
     )
     $replacement = @{}
     foreach ($name in @($Provider.Keys)) {
@@ -219,6 +220,48 @@ function Start-360CleanupElevatedProcess {
         param($Executable, $Arguments)
         Start-Process -FilePath $Executable -Verb RunAs -ArgumentList $Arguments -Wait -PassThru
     }
+}
+
+function Get-360CleanupPathItem {
+    param([string]$Path)
+
+    return Invoke-360CleanupRuntimeProvider -Name 'PathItem' -ArgumentList @($Path) -Default {
+        param($Target)
+        Get-Item -LiteralPath $Target -Force -ErrorAction Stop
+    }
+}
+
+function Get-360CleanupPathChildren {
+    param([string]$Path)
+
+    return @(Invoke-360CleanupRuntimeProvider -Name 'PathChildren' -ArgumentList @($Path) -Default {
+        param($Target)
+        Get-ChildItem -LiteralPath $Target -Force -ErrorAction Stop
+    })
+}
+
+function Remove-360CleanupPath {
+    param([string]$Path)
+
+    Invoke-360CleanupRuntimeProvider -Name 'RemovePath' -ArgumentList @($Path) -Default {
+        param($Target)
+        Remove-Item -LiteralPath $Target -Recurse -Force -ErrorAction Stop
+    } | Out-Null
+}
+
+function Repair-360CleanupPathAcl {
+    param([string]$Path)
+
+    Invoke-360CleanupRuntimeProvider -Name 'RepairPathAcl' -ArgumentList @($Path) -Default {
+        param($Target)
+
+        # This operation is deliberately non-recursive. The caller must re-enumerate the
+        # complete removal root before deciding whether recursive deletion is safe.
+        & takeown.exe /F $Target 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "takeown.exe failed with exit code $LASTEXITCODE." }
+        & icacls.exe $Target /grant '*S-1-5-32-544:F' /C /L 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls.exe failed with exit code $LASTEXITCODE." }
+    } | Out-Null
 }
 
 function Get-NormalPath {
@@ -1260,76 +1303,305 @@ function Test-IsExpectedRemovalPath {
     return $false
 }
 
-function Test-PathChainHasReparsePoint {
+function New-RemovalPathSafetyState {
+    param(
+        [ValidateSet('Safe', 'AccessDenied', 'ReparsePoint', 'Unsafe')]
+        [string]$State,
+        [string]$Path,
+        [bool]$Exists = $false,
+        [bool]$TreeScanComplete = $false,
+        [string]$BlockedPath = '',
+        [bool]$BlockedPathVerifiedNonReparse = $false,
+        [string]$Detail = ''
+    )
+
+    return [pscustomobject]@{
+        State                         = $State
+        Path                          = $Path
+        Exists                        = $Exists
+        TreeScanComplete              = $TreeScanComplete
+        BlockedPath                   = $BlockedPath
+        BlockedPathVerifiedNonReparse = $BlockedPathVerifiedNonReparse
+        Detail                        = $Detail
+    }
+}
+
+function Test-IsPathAccessDeniedError {
+    param([object]$ErrorObject)
+
+    if ($null -eq $ErrorObject) { return $false }
+    try {
+        if ([string]$ErrorObject.CategoryInfo.Category -eq 'PermissionDenied' -or
+            [string]$ErrorObject.FullyQualifiedErrorId -match '(?i)UnauthorizedAccess|AccessDenied|PermissionDenied') {
+            return $true
+        }
+    }
+    catch {}
+
+    $exception = $ErrorObject
+    try {
+        if ($null -ne $ErrorObject.Exception) { $exception = $ErrorObject.Exception }
+    }
+    catch {}
+    while ($null -ne $exception) {
+        if ($exception -is [UnauthorizedAccessException] -or $exception -is [Security.SecurityException]) {
+            return $true
+        }
+        if ($exception -is [ComponentModel.Win32Exception] -and $exception.NativeErrorCode -eq 5) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
+function Test-IsPathNotFoundError {
+    param([object]$ErrorObject)
+
+    if ($null -eq $ErrorObject) { return $false }
+    try {
+        if ([string]$ErrorObject.CategoryInfo.Category -eq 'ObjectNotFound' -or
+            [string]$ErrorObject.FullyQualifiedErrorId -match '(?i)PathNotFound|ItemNotFound') {
+            return $true
+        }
+    }
+    catch {}
+
+    $exception = $ErrorObject
+    try {
+        if ($null -ne $ErrorObject.Exception) { $exception = $ErrorObject.Exception }
+    }
+    catch {}
+    while ($null -ne $exception) {
+        if ($exception -is [IO.FileNotFoundException] -or $exception -is [IO.DirectoryNotFoundException] -or
+            $exception -is [System.Management.Automation.ItemNotFoundException]) {
+            return $true
+        }
+        $exception = $exception.InnerException
+    }
+    return $false
+}
+
+function Get-PathTraversalSafetyState {
     param([string]$Path)
 
     $target = Get-NormalPath $Path
-    if (-not $target) { return $true }
+    if (-not $target) {
+        return New-RemovalPathSafetyState -State 'Unsafe' -Path ([string]$Path) `
+            -Detail 'The target is not a valid normalized path.'
+    }
+
     $root = [IO.Path]::GetPathRoot($target)
+    if ([string]::IsNullOrWhiteSpace($root) -or $target.Length -le $root.Length) {
+        return New-RemovalPathSafetyState -State 'Unsafe' -Path $target `
+            -Detail 'Drive and share roots are never valid recursive removal targets.'
+    }
+
     $relative = $target.Substring($root.Length)
     $current = $root
+    $targetItem = $null
     foreach ($segment in @($relative -split '\\' | Where-Object { $_ })) {
         $current = Join-Path $current $segment
-        if (-not (Test-Path -LiteralPath $current)) { continue }
         try {
-            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
-            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $true }
+            $item = Get-360CleanupPathItem $current
         }
-        catch { return $true }
+        catch {
+            if (Test-IsPathNotFoundError $_) {
+                return New-RemovalPathSafetyState -State 'Safe' -Path $target -Exists $false `
+                    -TreeScanComplete $true -Detail 'The target is no longer present.'
+            }
+            $detail = if (Test-IsPathAccessDeniedError $_) {
+                'The target parent chain could not be inspected; its reparse-point status is unknown.'
+            }
+            else { 'The target parent chain could not be inspected safely.' }
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $current -Detail ($detail + ' ' + $_.Exception.Message)
+        }
+
+        if ($null -eq $item) {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $current -Detail 'Path inspection returned a null item.'
+        }
+        $propertyNames = @($item.PSObject.Properties.Name)
+        if ($propertyNames -notcontains 'FullName' -or $propertyNames -notcontains 'Attributes' -or
+            $propertyNames -notcontains 'PSIsContainer') {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $current -Detail 'Path inspection returned an incomplete item.'
+        }
+        $itemPath = Get-NormalPath ([string]$item.FullName)
+        if (-not $itemPath -or -not $itemPath.Equals((Get-NormalPath $current), [StringComparison]::OrdinalIgnoreCase)) {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $current -Detail 'Path inspection returned an incomplete or mismatched item.'
+        }
+        if ([IO.FileAttributes]$item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            return New-RemovalPathSafetyState -State 'ReparsePoint' -Path $target -Exists $true `
+                -BlockedPath $itemPath -Detail 'The target path chain contains a reparse point.'
+        }
+        if (-not [bool]$item.PSIsContainer -and
+            -not $itemPath.Equals($target, [StringComparison]::OrdinalIgnoreCase)) {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $itemPath -Detail 'A parent path component is not a directory.'
+        }
+        if ($itemPath.Equals($target, [StringComparison]::OrdinalIgnoreCase)) { $targetItem = $item }
     }
-    return $false
+
+    if ($null -eq $targetItem) {
+        return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+            -Detail 'The target item could not be matched to its normalized path.'
+    }
+    if (-not [bool]$targetItem.PSIsContainer) {
+        return New-RemovalPathSafetyState -State 'Safe' -Path $target -Exists $true `
+            -TreeScanComplete $true -Detail 'The exact target is a non-reparse-point file.'
+    }
+
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push($target)
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        try {
+            $directoryItem = Get-360CleanupPathItem $directory
+        }
+        catch {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $directory `
+                -Detail ('A queued directory could not be re-inspected before enumeration. ' + $_.Exception.Message)
+        }
+        if ($null -eq $directoryItem) {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $directory -Detail 'A queued directory re-inspection returned null.'
+        }
+        $directoryPropertyNames = @($directoryItem.PSObject.Properties.Name)
+        if ($directoryPropertyNames -notcontains 'FullName' -or $directoryPropertyNames -notcontains 'Attributes' -or
+            $directoryPropertyNames -notcontains 'PSIsContainer') {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $directory -Detail 'A queued directory re-inspection returned an incomplete item.'
+        }
+        $observedDirectory = Get-NormalPath ([string]$directoryItem.FullName)
+        if (-not $observedDirectory -or
+            -not $observedDirectory.Equals($directory, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-IsUnderPath $observedDirectory $target) -or
+            -not [bool]$directoryItem.PSIsContainer) {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $directory -Detail 'A queued directory changed identity before enumeration.'
+        }
+        if ([IO.FileAttributes]$directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            return New-RemovalPathSafetyState -State 'ReparsePoint' -Path $target -Exists $true `
+                -BlockedPath $observedDirectory -Detail 'A queued directory became a reparse point before enumeration.'
+        }
+        try {
+            $children = @(Get-360CleanupPathChildren $directory)
+        }
+        catch {
+            if (Test-IsPathAccessDeniedError $_) {
+                return New-RemovalPathSafetyState -State 'AccessDenied' -Path $target -Exists $true `
+                    -BlockedPath $directory -BlockedPathVerifiedNonReparse $true `
+                    -Detail ('Access was denied while enumerating a directory already observed as non-reparse. ' + $_.Exception.Message)
+            }
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                -BlockedPath $directory -Detail ('The target tree changed or could not be enumerated safely. ' + $_.Exception.Message)
+        }
+
+        foreach ($item in $children) {
+            if ($null -eq $item) {
+                return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                    -BlockedPath $directory -Detail 'Path enumeration returned a null child item.'
+            }
+            $propertyNames = @($item.PSObject.Properties.Name)
+            if ($propertyNames -notcontains 'FullName' -or $propertyNames -notcontains 'Attributes' -or
+                $propertyNames -notcontains 'PSIsContainer') {
+                return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                    -BlockedPath $directory -Detail 'Path enumeration returned an incomplete child item.'
+            }
+            $itemPath = Get-NormalPath ([string]$item.FullName)
+            $itemParent = if ($itemPath) { Get-NormalPath (Split-Path -Parent $itemPath) } else { $null }
+            if (-not $itemPath -or -not $itemParent -or
+                -not $itemParent.Equals($directory, [StringComparison]::OrdinalIgnoreCase)) {
+                return New-RemovalPathSafetyState -State 'Unsafe' -Path $target -Exists $true `
+                    -BlockedPath $directory -Detail 'Path enumeration returned an incomplete or out-of-tree child item.'
+            }
+            if ([IO.FileAttributes]$item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                return New-RemovalPathSafetyState -State 'ReparsePoint' -Path $target -Exists $true `
+                    -BlockedPath $itemPath -Detail 'The target tree contains a reparse point.'
+            }
+            if ([bool]$item.PSIsContainer) { $pending.Push($itemPath) }
+        }
+    }
+
+    return New-RemovalPathSafetyState -State 'Safe' -Path $target -Exists $true `
+        -TreeScanComplete $true -Detail 'The complete target tree was enumerated without reparse points.'
+}
+
+function Get-RemovalPathSafetyState {
+    param([string]$Path)
+
+    $target = Get-NormalPath $Path
+    if (-not $target) {
+        return New-RemovalPathSafetyState -State 'Unsafe' -Path ([string]$Path) `
+            -Detail 'The removal target is not a valid normalized path.'
+    }
+    try {
+        if ($script:KnownFolders.Windows -and (Test-IsUnderPath $target $script:KnownFolders.Windows)) {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target `
+                -Detail 'Targets under the Windows directory are never recursively removed.'
+        }
+        $blocked = @(
+            [IO.Path]::GetPathRoot($target),
+            $script:KnownFolders.Windows,
+            $script:KnownFolders.UserProfile,
+            $script:KnownFolders.LocalAppData,
+            $script:KnownFolders.RoamingAppData,
+            $script:KnownFolders.ProgramFiles,
+            $script:KnownFolders.ProgramFilesX86,
+            $script:KnownFolders.ProgramData,
+            $script:KnownFolders.Temp
+        ) | Where-Object { $_ }
+        foreach ($blockedRoot in $blocked) {
+            $normalRoot = Get-NormalPath $blockedRoot
+            if ($normalRoot -and $target.Equals($normalRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                return New-RemovalPathSafetyState -State 'Unsafe' -Path $target `
+                    -Detail 'A broad known-folder or filesystem root cannot be a removal target.'
+            }
+        }
+
+        $traversalState = Get-PathTraversalSafetyState $target
+        if ($traversalState.State -eq 'Safe' -and -not $traversalState.Exists) {
+            # A confirmed-absent target cannot be mutated. Return before dynamic metadata
+            # allowlist checks, which necessarily fail after a metadata-gated file is deleted.
+            return $traversalState
+        }
+        if ($traversalState.State -ne 'Safe') { return $traversalState }
+        if (-not (Test-IsExpectedRemovalPath $target)) {
+            return New-RemovalPathSafetyState -State 'Unsafe' -Path $target `
+                -Exists $traversalState.Exists -BlockedPath $traversalState.BlockedPath `
+                -Detail 'The target is outside the exact removal allowlist.'
+        }
+        return $traversalState
+    }
+    catch {
+        return New-RemovalPathSafetyState -State 'Unsafe' -Path $target `
+            -Detail ('Removal-path validation failed unexpectedly. ' + $_.Exception.Message)
+    }
+}
+
+function Test-PathChainHasReparsePoint {
+    param([string]$Path)
+
+    $state = Get-PathTraversalSafetyState $Path
+    return $state.State -ne 'Safe' -or -not $state.Exists
 }
 
 function Test-PathTreeHasReparsePoint {
     param([string]$Path)
 
-    $target = Get-NormalPath $Path
-    if (-not $target -or -not (Test-Path -LiteralPath $target)) { return $true }
-    try {
-        $rootItem = Get-Item -LiteralPath $target -Force -ErrorAction Stop
-        if ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $true }
-        if (-not $rootItem.PSIsContainer) { return $false }
-
-        $pending = New-Object System.Collections.Generic.Stack[string]
-        $pending.Push($target)
-        while ($pending.Count -gt 0) {
-            $directory = $pending.Pop()
-            foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
-                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $true }
-                if ($item.PSIsContainer) { $pending.Push($item.FullName) }
-            }
-        }
-    }
-    catch { return $true }
-    return $false
+    $state = Get-PathTraversalSafetyState $Path
+    return $state.State -ne 'Safe' -or -not $state.Exists
 }
 
 function Test-SafeRemovalTarget {
     param([string]$Path)
 
-    $target = Get-NormalPath $Path
-    if (-not $target -or -not (Test-Path -LiteralPath $target)) { return $false }
-    if (-not (Test-IsExpectedRemovalPath $target)) { return $false }
-    if ($script:KnownFolders.Windows -and (Test-IsUnderPath $target $script:KnownFolders.Windows)) { return $false }
-    $blocked = @(
-        [IO.Path]::GetPathRoot($target),
-        $script:KnownFolders.Windows,
-        $script:KnownFolders.UserProfile,
-        $script:KnownFolders.LocalAppData,
-        $script:KnownFolders.RoamingAppData,
-        $script:KnownFolders.ProgramFiles,
-        $script:KnownFolders.ProgramFilesX86,
-        $script:KnownFolders.ProgramData,
-        $script:KnownFolders.Temp
-    ) | Where-Object { $_ }
-    foreach ($root in $blocked) {
-        $normalRoot = Get-NormalPath $root
-        if ($normalRoot -and $target.Equals($normalRoot, [StringComparison]::OrdinalIgnoreCase)) { return $false }
-    }
-
-    if (Test-PathChainHasReparsePoint $target) { return $false }
-    if (Test-PathTreeHasReparsePoint $target) { return $false }
-    return $true
+    $state = Get-RemovalPathSafetyState $Path
+    return $state.State -eq 'Safe' -and $state.Exists -and $state.TreeScanComplete
 }
 
 function Assert-SafeReportPath {
@@ -1346,18 +1618,34 @@ function Get-RemovalTargetStats {
     param([string]$Path)
 
     $target = Get-NormalPath $Path
-    if (-not $target -or -not (Test-Path -LiteralPath $target)) {
-        return [pscustomobject]@{ Files = [int64]0; Directories = [int64]0; Bytes = [int64]0 }
+    if (-not $target) { throw 'The accounting target is not a valid normalized path.' }
+
+    try { $rootItem = Get-360CleanupPathItem $target }
+    catch {
+        if (Test-IsPathNotFoundError $_) {
+            return [pscustomobject]@{ Files = [int64]0; Directories = [int64]0; Bytes = [int64]0 }
+        }
+        throw
+    }
+    if ($null -eq $rootItem) { throw 'Accounting path inspection returned a null root item.' }
+    $rootPropertyNames = @($rootItem.PSObject.Properties.Name)
+    if ($rootPropertyNames -notcontains 'FullName' -or $rootPropertyNames -notcontains 'Attributes' -or
+        $rootPropertyNames -notcontains 'PSIsContainer') {
+        throw 'Accounting path inspection returned an incomplete root item.'
+    }
+    $observedRoot = Get-NormalPath ([string]$rootItem.FullName)
+    if (-not $observedRoot -or -not $observedRoot.Equals($target, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Accounting path inspection returned a mismatched root item.'
     }
 
     $files = [int64]0
     $directories = [int64]0
     $bytes = [int64]0
-    $rootItem = Get-Item -LiteralPath $target -Force -ErrorAction Stop
     if ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
         throw "Refusing to measure a reparse-point target: $target"
     }
     if (-not $rootItem.PSIsContainer) {
+        if ($rootPropertyNames -notcontains 'Length') { throw 'Accounting file inspection did not return Length.' }
         return [pscustomobject]@{ Files = [int64]1; Directories = [int64]0; Bytes = [int64]$rootItem.Length }
     }
 
@@ -1366,15 +1654,46 @@ function Get-RemovalTargetStats {
     $pending.Push($target)
     while ($pending.Count -gt 0) {
         $directory = $pending.Pop()
-        foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
+        $directoryItem = Get-360CleanupPathItem $directory
+        if ($null -eq $directoryItem) { throw "Accounting directory re-inspection returned null: $directory" }
+        $directoryPropertyNames = @($directoryItem.PSObject.Properties.Name)
+        if ($directoryPropertyNames -notcontains 'FullName' -or
+            $directoryPropertyNames -notcontains 'Attributes' -or
+            $directoryPropertyNames -notcontains 'PSIsContainer') {
+            throw "Accounting directory re-inspection returned an incomplete item: $directory"
+        }
+        $observedDirectory = Get-NormalPath ([string]$directoryItem.FullName)
+        if (-not $observedDirectory -or
+            -not $observedDirectory.Equals($directory, [StringComparison]::OrdinalIgnoreCase) -or
+            -not (Test-IsUnderPath $observedDirectory $target) -or
+            -not [bool]$directoryItem.PSIsContainer) {
+            throw "Accounting directory changed identity before enumeration: $directory"
+        }
+        if ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Refusing to measure a directory that became a reparse point: $observedDirectory"
+        }
+        foreach ($item in @(Get-360CleanupPathChildren $directory)) {
+            if ($null -eq $item) { throw "Accounting enumeration returned a null child item: $directory" }
+            $propertyNames = @($item.PSObject.Properties.Name)
+            if ($propertyNames -notcontains 'FullName' -or $propertyNames -notcontains 'Attributes' -or
+                $propertyNames -notcontains 'PSIsContainer') {
+                throw "Accounting enumeration returned an incomplete child item: $directory"
+            }
+            $itemPath = Get-NormalPath ([string]$item.FullName)
+            $itemParent = if ($itemPath) { Get-NormalPath (Split-Path -Parent $itemPath) } else { $null }
+            if (-not $itemPath -or -not $itemParent -or
+                -not $itemParent.Equals($directory, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Accounting enumeration returned an out-of-tree child item: $directory"
+            }
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-                throw "Refusing to measure a tree containing a reparse point: $($item.FullName)"
+                throw "Refusing to measure a tree containing a reparse point: $itemPath"
             }
             if ($item.PSIsContainer) {
                 $directories++
-                $pending.Push($item.FullName)
+                $pending.Push($itemPath)
             }
             else {
+                if ($propertyNames -notcontains 'Length') { throw "Accounting file inspection did not return Length: $itemPath" }
                 $files++
                 $bytes += [int64]$item.Length
             }
@@ -1497,9 +1816,37 @@ function Remove-ConfirmedFindings {
     if ($confirmed.Count -gt 256 -or $pathTargets.Count -gt 64) {
         throw 'Safety limit exceeded: too many confirmed targets. Stop and review the detector output instead of broadening deletion.'
     }
+
+    $safePathTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $accessDeniedPathTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $observedAccessDeniedPathTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $unmeasuredPathTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $unresolvedPathTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
     foreach ($target in $pathTargets) {
-        if ((Test-Path -LiteralPath $target) -and -not (Test-SafeRemovalTarget $target)) {
-            throw "Removal preflight failed for path target: $target. No services, tasks, registry entries, processes, or files were changed."
+        $state = Get-RemovalPathSafetyState $target
+        switch ($state.State) {
+            'Safe' {
+                if ($state.Exists) { [void]$safePathTargets.Add($state.Path) }
+            }
+            'AccessDenied' {
+                if (-not $state.BlockedPathVerifiedNonReparse -or
+                    -not (Test-IsUnderPath $state.BlockedPath $state.Path)) {
+                    throw "Removal preflight returned an unrepairable access-denied state for path target: $target. No changes were made."
+                }
+                [void]$accessDeniedPathTargets.Add($state.Path)
+                [void]$observedAccessDeniedPathTargets.Add($state.Path)
+                [void]$unmeasuredPathTargets.Add($state.Path)
+                [void]$unresolvedPathTargets.Add($state.Path)
+            }
+            'ReparsePoint' {
+                throw "Removal preflight found a reparse point for path target: $target ($($state.BlockedPath)). No changes were made."
+            }
+            'Unsafe' {
+                throw "Removal preflight rejected path target: $target. $($state.Detail) No changes were made."
+            }
+            default {
+                throw "Removal preflight returned an unknown state for path target: $target. No changes were made."
+            }
         }
     }
 
@@ -1507,11 +1854,96 @@ function Remove-ConfirmedFindings {
     $accountingTargets = @(Get-TopLevelAccountingTargets $pathTargets)
     $initialPathStats = @{}
     foreach ($target in $accountingTargets) {
-        if (-not (Test-Path -LiteralPath $target)) { continue }
+        if ($accessDeniedPathTargets.Contains($target)) { continue }
+        if (-not $safePathTargets.Contains($target)) { continue }
         try { $initialPathStats[$target] = Get-RemovalTargetStats $target }
         catch {
+            $state = Get-RemovalPathSafetyState $target
+            if ($state.State -eq 'AccessDenied' -and $state.BlockedPathVerifiedNonReparse) {
+                [void]$safePathTargets.Remove($target)
+                [void]$accessDeniedPathTargets.Add($target)
+                [void]$observedAccessDeniedPathTargets.Add($target)
+                [void]$unmeasuredPathTargets.Add($target)
+                [void]$unresolvedPathTargets.Add($target)
+                continue
+            }
+            if ($state.State -eq 'Safe' -and -not $state.Exists) {
+                [void]$safePathTargets.Remove($target)
+                continue
+            }
             throw "Removal accounting preflight failed for path target: $target. No changes were made. $($_.Exception.Message)"
         }
+    }
+
+    # Accounting itself can race with filesystem changes. Revalidate every target
+    # once more before the first service, task, registry, process, ACL, or path mutation.
+    foreach ($target in @($safePathTargets)) {
+        $state = Get-RemovalPathSafetyState $target
+        if ($state.State -eq 'Safe' -and $state.TreeScanComplete) {
+            if (-not $state.Exists) { [void]$safePathTargets.Remove($target) }
+            continue
+        }
+        if ($state.State -eq 'AccessDenied' -and $state.BlockedPathVerifiedNonReparse -and
+            (Test-IsUnderPath $state.BlockedPath $state.Path)) {
+            [void]$safePathTargets.Remove($target)
+            [void]$accessDeniedPathTargets.Add($state.Path)
+            [void]$observedAccessDeniedPathTargets.Add($state.Path)
+            [void]$unmeasuredPathTargets.Add($state.Path)
+            [void]$unresolvedPathTargets.Add($state.Path)
+            continue
+        }
+        if ($state.State -eq 'ReparsePoint') {
+            throw "Final removal preflight found a reparse point for path target: $target ($($state.BlockedPath)). No changes were made."
+        }
+        throw "Final removal preflight could not prove path target safe: $target. $($state.Detail) No changes were made."
+    }
+
+    foreach ($target in @($accessDeniedPathTargets)) {
+        $state = Get-RemovalPathSafetyState $target
+        if ($state.State -eq 'AccessDenied' -and $state.BlockedPathVerifiedNonReparse -and
+            (Test-IsUnderPath $state.BlockedPath $state.Path)) {
+            [void]$observedAccessDeniedPathTargets.Add($state.Path)
+            continue
+        }
+        if ($state.State -eq 'Safe' -and $state.TreeScanComplete) {
+            [void]$accessDeniedPathTargets.Remove($target)
+            if (-not $state.Exists) {
+                [void]$unmeasuredPathTargets.Remove($target)
+                [void]$unresolvedPathTargets.Remove($target)
+                continue
+            }
+
+            $isAccountingTarget = @($accountingTargets | Where-Object {
+                $_.Equals($target, [StringComparison]::OrdinalIgnoreCase)
+            }).Count -gt 0
+            if ($isAccountingTarget -and -not $initialPathStats.ContainsKey($target)) {
+                try { $initialPathStats[$target] = Get-RemovalTargetStats $target }
+                catch {
+                    $measurementError = $_
+                    $measurementState = Get-RemovalPathSafetyState $target
+                    if ($measurementState.State -eq 'AccessDenied' -and
+                        $measurementState.BlockedPathVerifiedNonReparse -and
+                        (Test-IsUnderPath $measurementState.BlockedPath $target)) {
+                        [void]$accessDeniedPathTargets.Add($target)
+                        [void]$observedAccessDeniedPathTargets.Add($target)
+                        continue
+                    }
+                    if ($measurementState.State -eq 'Safe' -and -not $measurementState.Exists) {
+                        [void]$unmeasuredPathTargets.Remove($target)
+                        [void]$unresolvedPathTargets.Remove($target)
+                        continue
+                    }
+                    throw "Final removal accounting preflight failed for path target: $target. No changes were made. $($measurementError.Exception.Message)"
+                }
+            }
+            [void]$safePathTargets.Add($target)
+            [void]$unmeasuredPathTargets.Remove($target)
+            continue
+        }
+        if ($state.State -eq 'ReparsePoint') {
+            throw "Final removal preflight exposed a reparse point in an access-denied target: $target ($($state.BlockedPath)). No changes were made."
+        }
+        throw "Final removal preflight could not safely revalidate access-denied target: $target. $($state.Detail) No changes were made."
     }
 
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Service' })) {
@@ -1571,21 +2003,44 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'DeleteRegistryKey' $finding.Target 'Failed' $_.Exception.Message }
     }
 
-    $failedTargets = New-Object System.Collections.ArrayList
-    foreach ($target in $pathTargets) {
-        if (-not (Test-Path -LiteralPath $target)) { continue }
-        if (-not (Test-SafeRemovalTarget $target)) {
-            Add-Action $actions 'DeletePath' $target 'Skipped' 'Target validation failed or target is a reparse point.'
+    $failedTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $forceTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $accessDeniedDeleteTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($target in @($safePathTargets)) {
+        $state = Get-RemovalPathSafetyState $target
+        if ($state.State -eq 'Safe') {
+            if (-not $state.Exists) { continue }
+            try {
+                Remove-360CleanupPath $target
+                [void]$unresolvedPathTargets.Remove($target)
+                Add-Action $actions 'DeletePath' $target 'Success' 'Permanently removed; not sent to Recycle Bin.'
+            }
+            catch {
+                [void]$failedTargets.Add($target)
+                [void]$unresolvedPathTargets.Add($target)
+                $reasonCode = 'DeleteFailed'
+                if (Test-IsPathAccessDeniedError $_) {
+                    [void]$accessDeniedDeleteTargets.Add($target)
+                    [void]$observedAccessDeniedPathTargets.Add($target)
+                    $reasonCode = 'AccessDenied'
+                }
+                Add-Action $actions 'DeletePath' $target 'RetryRequired' `
+                    ("ReasonCode=$reasonCode; " + $_.Exception.Message)
+            }
             continue
         }
-        try {
-            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
-            Add-Action $actions 'DeletePath' $target 'Success' 'Permanently removed; not sent to Recycle Bin.'
+        if ($state.State -eq 'AccessDenied' -and $state.BlockedPathVerifiedNonReparse) {
+            [void]$accessDeniedPathTargets.Add($target)
+            [void]$observedAccessDeniedPathTargets.Add($target)
+            [void]$unmeasuredPathTargets.Add($target)
+            [void]$unresolvedPathTargets.Add($target)
+            continue
         }
-        catch {
-            [void]$failedTargets.Add($target)
-            Add-Action $actions 'DeletePath' $target 'RetryRequired' $_.Exception.Message
-        }
+
+        [void]$unresolvedPathTargets.Add($target)
+        $reasonCode = if ($state.State -eq 'ReparsePoint') { 'ReparsePoint' } else { 'UnknownInspectionError' }
+        Add-Action $actions 'DeletePath' $target 'Failed' `
+            ("ReasonCode=$reasonCode; Target changed after the global preflight. $($state.Detail)")
     }
 
     $explorerStopped = $false
@@ -1630,44 +2085,285 @@ function Remove-ConfirmedFindings {
         Start-Sleep -Milliseconds 700
         foreach ($target in @($failedTargets)) {
             $normalTarget = Get-NormalPath $target
-            if (-not (Test-SafeRemovalTarget $target)) {
-                Add-Action $actions 'DeletePathRetry' $target 'Skipped' 'Target failed the second safety/reparse-point validation.'
-                continue
-            }
             if ($externalLocks.ContainsKey($normalTarget)) {
+                [void]$unresolvedPathTargets.Add($target)
                 Add-Action $actions 'DeletePathRetry' $target 'Skipped' 'Target is held by a normal or system process that the cleaner will not force-stop.'
                 continue
             }
-            try {
-                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
-                Add-Action $actions 'DeletePathRetry' $target 'Success' 'Removed after the validated lock holder exited; ACLs were not changed.'
-            }
-            catch {
-                if (-not $ForceLockedTargets) {
-                    Add-Action $actions 'DeletePathRetry' $target 'Skipped' `
-                        ('Still locked or access denied. Ownership was not changed. Reboot and verify first. ' + $_.Exception.Message)
+            $state = Get-RemovalPathSafetyState $target
+            if ($state.State -eq 'Safe') {
+                if (-not $state.Exists) {
+                    [void]$unresolvedPathTargets.Remove($target)
                     continue
                 }
                 try {
-                    if (-not (Test-SafeRemovalTarget $target)) { throw 'Target failed safety validation before ACL repair.' }
-                    $item = Get-Item -LiteralPath $target -Force
-                    if ($item.PSIsContainer) {
-                        & takeown.exe /F $target /R /D Y 2>&1 | Out-Null
-                        if ($LASTEXITCODE -ne 0) { throw "takeown.exe failed with exit code $LASTEXITCODE." }
-                        & icacls.exe $target /grant '*S-1-5-32-544:(OI)(CI)F' /T /C 2>&1 | Out-Null
-                        if ($LASTEXITCODE -ne 0) { throw "icacls.exe failed with exit code $LASTEXITCODE." }
+                    [void]$accessDeniedDeleteTargets.Remove($target)
+                    Remove-360CleanupPath $target
+                    [void]$unresolvedPathTargets.Remove($target)
+                    Add-Action $actions 'DeletePathRetry' $target 'Success' 'Removed after the validated lock holder exited; ACLs were not changed.'
+                }
+                catch {
+                    [void]$unresolvedPathTargets.Add($target)
+                    $reasonCode = 'DeleteFailed'
+                    if (Test-IsPathAccessDeniedError $_) {
+                        [void]$accessDeniedDeleteTargets.Add($target)
+                        [void]$observedAccessDeniedPathTargets.Add($target)
+                        $reasonCode = 'AccessDenied'
+                    }
+                    if ($ForceLockedTargets) {
+                        [void]$forceTargets.Add($target)
+                        Add-Action $actions 'DeletePathRetry' $target 'RetryRequired' `
+                            ("ReasonCode=$reasonCode; " + $_.Exception.Message)
                     }
                     else {
-                        & takeown.exe /F $target 2>&1 | Out-Null
-                        if ($LASTEXITCODE -ne 0) { throw "takeown.exe failed with exit code $LASTEXITCODE." }
-                        & icacls.exe $target /grant '*S-1-5-32-544:F' /C 2>&1 | Out-Null
-                        if ($LASTEXITCODE -ne 0) { throw "icacls.exe failed with exit code $LASTEXITCODE." }
+                        Add-Action $actions 'DeletePathRetry' $target 'Skipped' `
+                            ("ReasonCode=$reasonCode; Still locked or access denied. Ownership was not changed. Reboot and verify first. " + $_.Exception.Message)
                     }
-                    if (-not (Test-SafeRemovalTarget $target)) { throw 'Target changed or failed safety validation after ACL repair.' }
-                    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
-                    Add-Action $actions 'DeletePathForceRetry' $target 'Success' 'Ownership changed only on the twice-validated exact target.'
                 }
-                catch { Add-Action $actions 'DeletePathForceRetry' $target 'Failed' $_.Exception.Message }
+                continue
+            }
+            if ($state.State -eq 'AccessDenied' -and $state.BlockedPathVerifiedNonReparse) {
+                [void]$accessDeniedPathTargets.Add($target)
+                [void]$observedAccessDeniedPathTargets.Add($target)
+                [void]$unmeasuredPathTargets.Add($target)
+                [void]$unresolvedPathTargets.Add($target)
+                continue
+            }
+
+            [void]$unresolvedPathTargets.Add($target)
+            $reasonCode = if ($state.State -eq 'ReparsePoint') { 'ReparsePoint' } else { 'UnknownInspectionError' }
+            Add-Action $actions 'DeletePathRetry' $target 'Failed' `
+                ("ReasonCode=$reasonCode; Target changed before retry. $($state.Detail)")
+        }
+    }
+
+    foreach ($target in @($accessDeniedPathTargets)) {
+        [void]$unresolvedPathTargets.Add($target)
+        if ($ForceLockedTargets) {
+            if ($forceTargets.Add($target)) {
+                Add-Action $actions 'DeletePath' $target 'RetryRequired' `
+                    'ReasonCode=AccessDenied; A verified non-reparse directory frontier will be considered for non-recursive ACL repair.'
+            }
+        }
+        else {
+            Add-Action $actions 'DeletePath' $target 'Skipped' `
+                'ReasonCode=AccessDenied; The tree could not be fully inspected. Ownership and ACLs were not changed.'
+        }
+    }
+
+    # Force processing is deliberately last. Each denied frontier may receive one
+    # non-recursive ACL adjustment, followed by a complete scan from the approved root.
+    foreach ($target in @($forceTargets)) {
+        $repairedFrontiers = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+        $round = 0
+        while ($true) {
+            $round++
+            if ($round -gt 64) {
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    'ReasonCode=AclRepairFailed; Safety rescan limit exceeded.'
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+
+            $state = Get-RemovalPathSafetyState $target
+            $frontier = $null
+            if ($state.State -eq 'Safe') {
+                if (-not $state.TreeScanComplete) {
+                    Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                        'ReasonCode=UnknownInspectionError; A Safe state did not include a complete tree scan.'
+                    [void]$unresolvedPathTargets.Add($target)
+                    break
+                }
+                if (-not $state.Exists) {
+                    [void]$unresolvedPathTargets.Remove($target)
+                    break
+                }
+
+                if (@($accountingTargets | Where-Object {
+                    $_.Equals($target, [StringComparison]::OrdinalIgnoreCase)
+                }).Count -gt 0 -and -not $initialPathStats.ContainsKey($target)) {
+                    try {
+                        $initialPathStats[$target] = Get-RemovalTargetStats $target
+                        [void]$unmeasuredPathTargets.Remove($target)
+                    }
+                    catch {
+                        $measurementError = $_
+                        $state = Get-RemovalPathSafetyState $target
+                        if ($state.State -eq 'AccessDenied' -and $state.BlockedPathVerifiedNonReparse -and
+                            (Test-IsUnderPath $state.BlockedPath $target)) {
+                            $frontier = Get-NormalPath $state.BlockedPath
+                            [void]$accessDeniedPathTargets.Add($target)
+                            [void]$observedAccessDeniedPathTargets.Add($target)
+                            [void]$unmeasuredPathTargets.Add($target)
+                        }
+                        else {
+                            $reasonCode = if ($state.State -eq 'ReparsePoint') { 'ReparsePoint' } else { 'UnknownInspectionError' }
+                            Add-Action $actions 'MeasureRemoval' $target 'Failed' `
+                                ("ReasonCode=$reasonCode; Baseline accounting after ACL repair failed. " + $measurementError.Exception.Message)
+                            [void]$unmeasuredPathTargets.Add($target)
+                            [void]$unresolvedPathTargets.Add($target)
+                            break
+                        }
+                    }
+                }
+
+                if (-not $frontier) {
+                    $finalState = Get-RemovalPathSafetyState $target
+                    if ($finalState.State -eq 'AccessDenied' -and
+                        $finalState.BlockedPathVerifiedNonReparse -and
+                        (Test-IsUnderPath $finalState.BlockedPath $target)) {
+                        $state = $finalState
+                        $frontier = Get-NormalPath $finalState.BlockedPath
+                        [void]$accessDeniedPathTargets.Add($target)
+                        [void]$observedAccessDeniedPathTargets.Add($target)
+                        [void]$unmeasuredPathTargets.Add($target)
+                    }
+                    elseif ($finalState.State -ne 'Safe' -or -not $finalState.TreeScanComplete) {
+                        $reasonCode = if ($finalState.State -eq 'ReparsePoint') { 'ReparsePoint' } else { 'UnknownInspectionError' }
+                        Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                            ("ReasonCode=$reasonCode; Final full-tree validation failed. $($finalState.Detail)")
+                        [void]$unresolvedPathTargets.Add($target)
+                        break
+                    }
+                    elseif (-not $finalState.Exists) {
+                        [void]$unresolvedPathTargets.Remove($target)
+                        break
+                    }
+                    elseif ($accessDeniedDeleteTargets.Contains($target)) {
+                        # The latest deletion attempt, rather than tree enumeration, returned access denied.
+                        # Repair only the exact approved target; the item is re-inspected again below.
+                        $frontier = $target
+                    }
+                    else {
+                        try {
+                            Remove-360CleanupPath $target
+                        }
+                        catch {
+                            if (Test-IsPathAccessDeniedError $_) {
+                                [void]$accessDeniedDeleteTargets.Add($target)
+                                [void]$observedAccessDeniedPathTargets.Add($target)
+                                $frontier = $target
+                            }
+                            else {
+                                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                                    ('ReasonCode=DeleteFailed; Final validated retry failed without an access-denied error; ACLs were not changed. ' + $_.Exception.Message)
+                                [void]$unresolvedPathTargets.Add($target)
+                                break
+                            }
+                        }
+
+                        if (-not $frontier) {
+                            $postRemovalState = Get-RemovalPathSafetyState $target
+                            if ($postRemovalState.State -eq 'Safe' -and -not $postRemovalState.Exists) {
+                                [void]$unresolvedPathTargets.Remove($target)
+                                $detail = if ($repairedFrontiers.Count -gt 0) {
+                                    'ACL repair was non-recursive; the complete approved root was revalidated before deletion.'
+                                }
+                                else { 'Removed on the final validated retry; ACLs were not changed.' }
+                                Add-Action $actions 'DeletePathForceRetry' $target 'Success' $detail
+                                break
+                            }
+                            if ($postRemovalState.State -eq 'AccessDenied' -and
+                                $postRemovalState.BlockedPathVerifiedNonReparse -and
+                                (Test-IsUnderPath $postRemovalState.BlockedPath $target)) {
+                                $state = $postRemovalState
+                                $frontier = Get-NormalPath $postRemovalState.BlockedPath
+                                [void]$accessDeniedPathTargets.Add($target)
+                                [void]$observedAccessDeniedPathTargets.Add($target)
+                                [void]$unmeasuredPathTargets.Add($target)
+                            }
+                            else {
+                                $reasonCode = if ($postRemovalState.State -eq 'ReparsePoint') { 'ReparsePoint' } else { 'DeleteFailed' }
+                                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                                    ("ReasonCode=$reasonCode; The target was not safely absent after deletion. $($postRemovalState.Detail)")
+                                [void]$unresolvedPathTargets.Add($target)
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+            elseif ($state.State -eq 'AccessDenied' -and $state.BlockedPathVerifiedNonReparse -and
+                (Test-IsUnderPath $state.BlockedPath $target)) {
+                $frontier = Get-NormalPath $state.BlockedPath
+                [void]$accessDeniedPathTargets.Add($target)
+                [void]$observedAccessDeniedPathTargets.Add($target)
+                [void]$unmeasuredPathTargets.Add($target)
+            }
+            elseif ($state.State -eq 'ReparsePoint' -or $state.State -eq 'Unsafe') {
+                $reasonCode = if ($state.State -eq 'ReparsePoint') { 'ReparsePoint' } else { 'UnknownInspectionError' }
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    ("ReasonCode=$reasonCode; Full-tree validation blocked force processing. $($state.Detail)")
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+            else {
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    'ReasonCode=UnknownInspectionError; Access-denied frontier was not safely repairable.'
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+
+            if (-not $frontier -or $repairedFrontiers.Contains($frontier)) {
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    'ReasonCode=AclRepairFailed; The same denied frontier remained inaccessible after one repair.'
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+
+            try {
+                $frontierItem = Get-360CleanupPathItem $frontier
+            }
+            catch {
+                if (Test-IsPathNotFoundError $_) { continue }
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    ('ReasonCode=UnknownInspectionError; Denied frontier could not be re-inspected before ACL repair. ' + $_.Exception.Message)
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+            if ($null -eq $frontierItem) {
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    'ReasonCode=UnknownInspectionError; Denied frontier inspection returned null before ACL repair.'
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+            $frontierPropertyNames = @($frontierItem.PSObject.Properties.Name)
+            if ($frontierPropertyNames -notcontains 'FullName' -or
+                $frontierPropertyNames -notcontains 'Attributes' -or
+                $frontierPropertyNames -notcontains 'PSIsContainer') {
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    'ReasonCode=UnknownInspectionError; Denied frontier inspection returned an incomplete item before ACL repair.'
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+            $observedFrontier = Get-NormalPath ([string]$frontierItem.FullName)
+            if (-not $observedFrontier -or
+                -not $observedFrontier.Equals($frontier, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-IsUnderPath $observedFrontier $target)) {
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    'ReasonCode=UnknownInspectionError; Denied frontier changed identity before ACL repair.'
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+            if ([IO.FileAttributes]$frontierItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                Add-Action $actions 'DeletePathForceRetry' $target 'Failed' `
+                    'ReasonCode=ReparsePoint; Denied frontier became a reparse point before ACL repair.'
+                [void]$unresolvedPathTargets.Add($target)
+                break
+            }
+
+            [void]$repairedFrontiers.Add($frontier)
+            try {
+                Repair-360CleanupPathAcl $frontier
+                [void]$accessDeniedDeleteTargets.Remove($target)
+                Add-Action $actions 'RepairPathAcl' $frontier 'Success' `
+                    'Non-recursive ownership and ACL repair; a full approved-root rescan is required next.'
+            }
+            catch {
+                Add-Action $actions 'RepairPathAcl' $frontier 'Failed' `
+                    ('ReasonCode=AclRepairFailed; No recursive ACL operation was attempted. ' + $_.Exception.Message)
+                [void]$unresolvedPathTargets.Add($target)
+                break
             }
         }
     }
@@ -1685,15 +2381,27 @@ function Remove-ConfirmedFindings {
     $bytesRemoved = [int64]0
     $pathTargetsRemoved = 0
     $partiallyCleanedPathTargets = 0
-    $unmeasuredPathTargets = 0
     foreach ($target in $accountingTargets) {
         if (-not $initialPathStats.ContainsKey($target)) { continue }
         $before = $initialPathStats[$target]
+
+        $afterState = Get-RemovalPathSafetyState $target
+        if ($afterState.State -ne 'Safe' -or -not $afterState.TreeScanComplete) {
+            $reasonCode = 'UnknownInspectionError'
+            if ($afterState.State -eq 'ReparsePoint') { $reasonCode = 'ReparsePoint' }
+            elseif ($afterState.State -eq 'AccessDenied') { $reasonCode = 'AccessDenied' }
+            if ($afterState.State -eq 'AccessDenied') {
+                [void]$observedAccessDeniedPathTargets.Add($target)
+            }
+            [void]$unmeasuredPathTargets.Add($target)
+            [void]$unresolvedPathTargets.Add($target)
+            Add-Action $actions 'MeasureRemoval' $target 'Failed' `
+                ("ReasonCode=$reasonCode; Final path accounting could not safely inspect the target. $($afterState.Detail)")
+            continue
+        }
+
         try {
-            if (Test-Path -LiteralPath $target) {
-                if (-not (Test-SafeRemovalTarget $target)) {
-                    throw 'The remaining target no longer passes the exact path and reparse-point safety checks.'
-                }
+            if ($afterState.Exists) {
                 $after = Get-RemovalTargetStats $target
             }
             else {
@@ -1706,16 +2414,36 @@ function Remove-ConfirmedFindings {
             $filesRemoved += $fileDelta
             $directoriesRemoved += $directoryDelta
             $bytesRemoved += $byteDelta
-            if (-not (Test-Path -LiteralPath $target)) {
+
+            $successfulPathAction = @($actions | Where-Object {
+                $_.Action -in @('DeletePath', 'DeletePathRetry', 'DeletePathForceRetry') -and
+                $_.Result -eq 'Success' -and $_.Target -eq $target
+            }).Count -gt 0
+            if (-not $afterState.Exists) {
+                [void]$unresolvedPathTargets.Remove($target)
                 $pathTargetsRemoved++
             }
-            elseif (($fileDelta + $directoryDelta + $byteDelta) -gt 0) {
-                $partiallyCleanedPathTargets++
+            else {
+                [void]$unresolvedPathTargets.Add($target)
+                if (($fileDelta + $directoryDelta + $byteDelta) -gt 0) {
+                    $partiallyCleanedPathTargets++
+                }
+                if ($successfulPathAction) {
+                    Add-Action $actions 'VerifyPathRemoval' $target 'Failed' `
+                        'ReasonCode=DeleteFailed; A path deletion returned success, but the approved target still exists.'
+                }
             }
+            [void]$unmeasuredPathTargets.Remove($target)
         }
         catch {
-            $unmeasuredPathTargets++
-            Add-Action $actions 'MeasureRemoval' $target 'Failed' $_.Exception.Message
+            $reasonCode = if (Test-IsPathAccessDeniedError $_) { 'AccessDenied' } else { 'UnknownInspectionError' }
+            if ($reasonCode -eq 'AccessDenied') {
+                [void]$observedAccessDeniedPathTargets.Add($target)
+            }
+            [void]$unmeasuredPathTargets.Add($target)
+            [void]$unresolvedPathTargets.Add($target)
+            Add-Action $actions 'MeasureRemoval' $target 'Failed' `
+                ("ReasonCode=$reasonCode; Final path accounting failed. " + $_.Exception.Message)
         }
     }
 
@@ -1729,9 +2457,17 @@ function Remove-ConfirmedFindings {
     $failedCount = @($actions | Where-Object { $_.Result -eq 'Failed' }).Count
     $pendingCount = @($actions | Where-Object { $_.Result -eq 'PendingRemoval' }).Count
     $retryAttemptCount = @($actions | Where-Object { $_.Result -eq 'RetryRequired' }).Count
+    $aclRepairAttemptCount = @($actions | Where-Object { $_.Action -eq 'RepairPathAcl' }).Count
+    $aclRepairFailureCount = @($actions | Where-Object {
+        $_.Action -eq 'RepairPathAcl' -and $_.Result -eq 'Failed'
+    }).Count
     $unresolvedRetryCount = @($actions | Where-Object {
-        $_.Action -in @('DeletePathRetry', 'DeletePathForceRetry') -and $_.Result -in @('Skipped', 'Failed')
+        $_.Action -in @('DeletePathRetry', 'DeletePathForceRetry') -and
+        $_.Result -in @('Skipped', 'Failed')
     } | Select-Object -ExpandProperty Target -Unique).Count
+    $accessDeniedPathTargetCount = $observedAccessDeniedPathTargets.Count
+    $unresolvedPathTargetCount = $unresolvedPathTargets.Count
+    $unmeasuredPathTargetCount = $unmeasuredPathTargets.Count
     $totalItemsRemoved = [int64]$filesRemoved + [int64]$directoriesRemoved + [int64]$serviceCount +
         [int64]$taskCount + [int64]$registryKeyCount + [int64]$registryValueCount
     $removalSummary = [pscustomobject]@{
@@ -1753,8 +2489,12 @@ function Remove-ConfirmedFindings {
         PendingActions              = $pendingCount
         RetryAttempts               = $retryAttemptCount
         UnresolvedRetryTargets      = $unresolvedRetryCount
-        PathAccountingComplete      = ($unmeasuredPathTargets -eq 0)
-        UnmeasuredPathTargets       = $unmeasuredPathTargets
+        AccessDeniedPathTargets     = $accessDeniedPathTargetCount
+        AclRepairAttempts           = $aclRepairAttemptCount
+        AclRepairFailures           = $aclRepairFailureCount
+        UnresolvedPathTargets       = $unresolvedPathTargetCount
+        PathAccountingComplete      = ($unmeasuredPathTargetCount -eq 0)
+        UnmeasuredPathTargets       = $unmeasuredPathTargetCount
         ImmediateRemainingConfirmed = 0
         NoImmediateConfirmedFindings = $false
     }
@@ -1766,6 +2506,45 @@ function Remove-ConfirmedFindings {
     }
 
     return @($actions)
+}
+
+function Test-RemovalOutcomeRequiresAttention {
+    param(
+        [object]$Summary,
+        [int]$RemainingConfirmed = 0
+    )
+
+    if ($RemainingConfirmed -gt 0 -or $null -eq $Summary) { return $true }
+
+    if ($Summary -is [System.Collections.IDictionary]) {
+        $propertyNames = @($Summary.Keys | ForEach-Object { [string]$_ })
+        if ($propertyNames -notcontains 'PathAccountingComplete' -or
+            $propertyNames -notcontains 'UnresolvedPathTargets' -or
+            $propertyNames -notcontains 'AclRepairFailures' -or
+            $propertyNames -notcontains 'FailedActions') {
+            return $true
+        }
+        $pathAccountingComplete = [bool]$Summary['PathAccountingComplete']
+        $unresolvedPathCount = [int]$Summary['UnresolvedPathTargets']
+        $aclRepairFailureCount = [int]$Summary['AclRepairFailures']
+        $failedActionCount = [int]$Summary['FailedActions']
+    }
+    else {
+        $propertyNames = @($Summary.PSObject.Properties.Name)
+        if ($propertyNames -notcontains 'PathAccountingComplete' -or
+            $propertyNames -notcontains 'UnresolvedPathTargets' -or
+            $propertyNames -notcontains 'AclRepairFailures' -or
+            $propertyNames -notcontains 'FailedActions') {
+            return $true
+        }
+        $pathAccountingComplete = [bool]$Summary.PathAccountingComplete
+        $unresolvedPathCount = [int]$Summary.UnresolvedPathTargets
+        $aclRepairFailureCount = [int]$Summary.AclRepairFailures
+        $failedActionCount = [int]$Summary.FailedActions
+    }
+
+    return (-not $pathAccountingComplete -or $unresolvedPathCount -gt 0 -or
+        $aclRepairFailureCount -gt 0 -or $failedActionCount -gt 0)
 }
 
 function Show-RemovalSummary {
@@ -1787,9 +2566,18 @@ function Show-RemovalSummary {
         $Summary.SkippedActions, $Summary.FailedActions, $Summary.PendingActions)
     Write-Host ("Retry attempts: {0}; unresolved retry targets: {1}" -f `
         $Summary.RetryAttempts, $Summary.UnresolvedRetryTargets)
+    $summaryPropertyNames = if ($Summary -is [System.Collections.IDictionary]) {
+        @($Summary.Keys | ForEach-Object { [string]$_ })
+    }
+    else { @($Summary.PSObject.Properties.Name) }
+    if ($summaryPropertyNames -contains 'AccessDeniedPathTargets') {
+        Write-Host ("Access-denied path targets observed: {0}; ACL repair attempts: {1}; ACL repair failures: {2}" -f `
+            $Summary.AccessDeniedPathTargets, $Summary.AclRepairAttempts, $Summary.AclRepairFailures)
+        Write-Host ("Unresolved path targets: {0}" -f $Summary.UnresolvedPathTargets)
+    }
     Write-Host ("Fully removed path targets: {0}; partially cleaned path targets: {1}" -f `
         $Summary.PathTargetsRemoved, $Summary.PartiallyCleanedPathTargets)
-    if (@($Summary.PSObject.Properties.Name) -contains 'ApprovedConfirmed') {
+    if ($summaryPropertyNames -contains 'ApprovedConfirmed') {
         Write-Host ("Approved confirmed: {0}; eligible now: {1}; new since approval: {2}" -f `
             $Summary.ApprovedConfirmed, $Summary.EligibleApproved, $Summary.NewSinceApproval)
         Write-Host ("Missing since approval: {0}; no longer confirmed: {1}" -f `
@@ -2051,8 +2839,12 @@ Write-Host 'Remaining findings:' -ForegroundColor Cyan
 Show-Findings $remainingFindings
 Write-Host "Report: $ReportPath" -ForegroundColor Cyan
 
-if ($remainingConfirmed -gt 0) {
-    Write-Warning "$remainingConfirmed confirmed finding(s) remain. Reboot and run Verify; do not broaden deletion without reviewing them."
+if (Test-RemovalOutcomeRequiresAttention -Summary $removalSummary -RemainingConfirmed $remainingConfirmed) {
+    $attentionMessage = ("Cleanup requires attention: {0} confirmed finding(s) remain, {1} path target(s) are unresolved, " +
+        "{2} ACL repair(s) failed, and path accounting complete is {3}. Reboot and run Verify; do not broaden deletion without review.") -f `
+        $remainingConfirmed, $removalSummary.UnresolvedPathTargets, $removalSummary.AclRepairFailures,
+        $removalSummary.PathAccountingComplete
+    Write-Warning $attentionMessage
     exit 2
 }
 

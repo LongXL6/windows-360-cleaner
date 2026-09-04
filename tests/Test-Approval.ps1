@@ -77,6 +77,10 @@ function New-ApprovalFixtureSummary {
         PendingActions               = 0
         RetryAttempts                = 0
         UnresolvedRetryTargets       = 0
+        AccessDeniedPathTargets      = 0
+        AclRepairAttempts            = 0
+        AclRepairFailures            = 0
+        UnresolvedPathTargets        = 0
         PathTargetsRemoved           = 0
         PartiallyCleanedPathTargets  = 0
         ImmediateRemainingConfirmed  = 0
@@ -462,6 +466,10 @@ try {
             PendingActions              = 0
             RetryAttempts               = 0
             UnresolvedRetryTargets      = 0
+            AccessDeniedPathTargets     = 0
+            AclRepairAttempts           = 0
+            AclRepairFailures           = 0
+            UnresolvedPathTargets       = 0
             PathTargetsRemoved          = 1
             PartiallyCleanedPathTargets = 0
             ImmediateRemainingConfirmed = 1
