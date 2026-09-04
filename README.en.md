@@ -6,7 +6,7 @@
   <img src="assets/readme/windows-360-cleaner-hero.jpg" alt="An AI agent scans, reviews, safely removes, and verifies Windows software" width="100%">
 </p>
 
-<h1 align="center">Windows 360 Cleaner Skill</h1>
+<h1 align="center">Windows 360 Cleaner: scan and remove 360/Qihoo software</h1>
 
 <p align="center">
   A safety-first skill package for Codex, Doubao, and other AI agents to audit and remove confirmed 360/Qihoo Windows software.<br>
@@ -22,19 +22,29 @@
 </p>
 
 > [!IMPORTANT]
-> This is an **AI agent skill package**, not a standalone cleaner application. The PowerShell files in `scripts/` are deterministic, auditable resources used by the skill.
+> This open-source **AI agent skill package** includes Windows PowerShell scripts. Use an agent for guidance or double-click a script yourself. It supports Windows 10/11 and PowerShell 5.1+; no paid service is required.
 
-## Start in 30 seconds
+## First time? Start with a scan report
+
+1. [Download the repository ZIP](https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip), choose **Extract All**, and open the extracted folder.
+2. Open `scripts` and double-click **`Scan-360.cmd`**. It does not remove software or require administrator access; it writes a JSON report when finished.
+3. Find the file shown beside **`Report:`** in the window (on the Desktop by default). Read the results before deciding whether to continue.
+
+**Getting the scan report completes the first step.** `Confirmed` means matching evidence was found, not that removal is approved. `ReviewOnly` means manual review only. Stop here if anything is unclear.
+
+[Beginner steps and common questions](references/getting-started.en.md) · [Agent guidance](references/doubao.md) · [Ask for help with redacted details](https://github.com/LongXL6/windows-360-cleaner/issues/new?template=help.yml)
+
+Browser profiles are preserved by default. Later removal is permanent, so back up important data before approval. Reports can contain personal paths: share a redacted copy and keep the original local Scan JSON unchanged.
+
+## Already using an agent?
 
 Copy this entire prompt to your agent:
 
 ```text
-Treat https://github.com/LongXL6/windows-360-cleaner as an AI skill package, not as an ordinary cleanup utility.
-Read the complete SKILL.md first and follow every safety boundary. Read references only when evidence or troubleshooting requires them.
-Run Scan only. Explain Confirmed, ReviewOnly, preserved normal files, and preserved browser data. Stop and wait for my explicit approval before running Remove.
-Never expand the allowlist, broadly delete paths containing 360, or remove files from an offline Windows installation.
-After approved removal, retain the Remove JSON Summary. Treat its Findings as immediate remaining state only when `ImmediateRescanComplete` is true. Then run Verify and count remaining Confirmed findings from the Verify JSON Findings.
-In the final answer, include every metric required by SKILL.md, even when its value is zero. Describe LogicalBytesRemoved as logical file size, not guaranteed freed disk space.
+Use https://github.com/LongXL6/windows-360-cleaner and read the complete SKILL.md first.
+Check whether you can access this Windows PC's terminal. Run Scan only if you can; otherwise guide me to scripts\Scan-360.cmd.
+Explain Confirmed, ReviewOnly, and preserved items, then stop for my explicit approval. Never delete by a broad 360 name match; preserve browser profiles by default.
+After approval, use the same reviewed original Scan report. Run Verify after removal and report all metrics and unresolved items required by SKILL.md.
 ```
 
 > [!WARNING]
@@ -47,8 +57,9 @@ Doubao supports file uploads, but terminal access varies by product version and 
 ```text
 Read SKILL.md from https://github.com/LongXL6/windows-360-cleaner before doing anything.
 First state whether you can actually access this Windows PC's local PowerShell session. If you can, run Scan only, explain Confirmed, ReviewOnly, and preserved items, then stop for my explicit approval.
-If you cannot access the terminal, do not claim that you scanned or removed anything. Ask me to download the ZIP, run scripts\Scan-360.cmd, and upload the JSON report for interpretation.
-Do not run or guide Remove until I explicitly approve after seeing the scan. After removal, run Verify and report every field required by SKILL.md, including zero values.
+If you cannot access the terminal, do not claim local execution. Ask me to extract the full ZIP and run scripts\Scan-360.cmd. Keep the original JSON locally; share only a separate redacted copy or excerpt with cloud services, and state that an excerpt cannot establish the full result.
+Wait until I review the local original and explicitly approve. Then use that same unchanged original for Remove, never the redacted copy.
+After removal, run Verify and redact a separate copy before any cloud upload. Report every field required by SKILL.md, including zero values; mark unavailable values as unknown rather than inventing them.
 ```
 
 See the bilingual [Doubao and generic-agent guide](references/doubao.md) for manual fallback steps and upload privacy notes.
@@ -82,7 +93,7 @@ The core rule is simple: **an agent may scan and explain automatically, but it m
 | Vendor uninstaller is identity-bound | Duohui's supported uninstaller requires a valid exact Qihoo Authenticode signer, approved exact path and SHA-256, and one built-in argument; registry command lines are never executed blindly |
 | Same-name replacement protected | Stable fingerprints for approved services, tasks, registry values, and registry-key trees are rechecked before mutation; changed or unreadable identities require a fresh Scan approval |
 | Offline Windows is scan-only | No cross-system removal mode exists |
-| Reports cannot overwrite | JSON reports are created as new files and omit computer/user identity by default |
+| Reports cannot overwrite | New JSON files omit the separate ComputerName/User fields by default; paths and approval context can still identify the user |
 
 ## What it checks
 
@@ -98,7 +109,7 @@ The core rule is simple: **an agent may scan and explain automatically, but it m
 - Files or folders whose only evidence is the number `360` in their name.
 - Built-in Windows screen savers such as `Bubbles.scr`, `PhotoScreensaver.scr`, and `scrnsave.scr`.
 - Driver Genius, GPU/network drivers, games, and numeric Steam/iRacing assets.
-- Independent `kantu`, `clear`, `pdf`, and `zip` tools under `winToolBox` without separate approval.
+- Independent `kantu`, `clear`, `pdf`, and `zip` tools under `winToolBox`; this tool has no option to remove those components.
 - Browser profiles under `360se6\User Data`, `360Chrome\Chrome\User Data`, `360ChromeX\Chrome\User Data`, and the legacy `360browser` path; program directories are detected separately.
 - Any file from another mounted Windows installation.
 
@@ -174,6 +185,12 @@ This test creates and removes only isolated fixtures under the system temporary 
 ```
 
 GitHub Actions runs the same safety suite on every change.
+
+## Sharing and publishing
+
+Use the editable [X, Xiaohongshu, WeChat, and Douyin copy](references/social-sharing.md) to introduce the project. Keep the first action read-only scanning.
+
+The [publishing and search guide](references/publishing.md) covers previewing the bilingual static pages in `docs/`, enabling GitHub Pages after review, and submitting a sitemap. Prepared page files do not mean a deployed or Google-indexed website.
 
 ## Contact
 

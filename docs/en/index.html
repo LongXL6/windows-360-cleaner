@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Windows 360 Cleaner: scan first, remove after review</title>
+  <meta name="description" content="Open-source AI agent skill for Windows 10/11: audit 360/Qihoo components, separate Confirmed from ReviewOnly, require human approval, and verify with JSON.">
+
+  <link rel="canonical" href="https://longxl6.github.io/windows-360-cleaner/en/">
+  <link rel="alternate" hreflang="zh-Hans" href="https://longxl6.github.io/windows-360-cleaner/">
+  <link rel="alternate" hreflang="en" href="https://longxl6.github.io/windows-360-cleaner/en/">
+  <link rel="alternate" hreflang="x-default" href="https://longxl6.github.io/windows-360-cleaner/">
+  <link rel="stylesheet" href="../styles.css">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Windows 360 Cleaner">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="Windows 360 Cleaner: scan first, remove after review">
+  <meta property="og:description" content="Run a read-only audit, review exact evidence, approve deliberately, and verify the result with local JSON reports.">
+  <meta property="og:url" content="https://longxl6.github.io/windows-360-cleaner/en/">
+  <meta property="og:image" content="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg">
+  <meta property="og:image:width" content="1600">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="The Windows 360 Cleaner safety flow from scanning and human review to verification">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Windows 360 Cleaner: scan first, remove after review">
+  <meta name="twitter:description" content="An open-source Windows 360/Qihoo cleanup skill: read-only scan, human approval, exact handling, and report-based verification.">
+  <meta name="twitter:image" content="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg">
+  <meta name="twitter:image:alt" content="The Windows 360 Cleaner safety flow from scanning and human review to verification">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "@id": "https://longxl6.github.io/windows-360-cleaner/en/#software",
+    "name": "Windows 360 Cleaner Skill",
+    "description": "An open-source AI agent skill for auditing and precisely removing confirmed 360/Qihoo Windows software.",
+    "url": "https://longxl6.github.io/windows-360-cleaner/en/",
+    "image": "https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg",
+    "codeRepository": "https://github.com/LongXL6/windows-360-cleaner",
+    "programmingLanguage": "PowerShell",
+    "license": "https://github.com/LongXL6/windows-360-cleaner/blob/main/LICENSE",
+    "inLanguage": "en",
+    "isAccessibleForFree": true
+  }
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="./" aria-label="Windows 360 Cleaner English home">
+        <span class="brand-mark" aria-hidden="true">360</span>
+        <span>Windows 360 Cleaner</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="#first-run">First run</a>
+        <a href="#safety">Safety</a>
+        <a href="#faq">FAQ</a>
+        <a class="language-link" href="../" lang="zh-Hans" hreflang="zh-Hans">简体中文</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <section class="hero shell" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <p class="context-line">Use it with an AI agent or follow the double-click guide yourself</p>
+        <h1 id="page-title">See the evidence before deciding what to remove</h1>
+        <p class="hero-lede">
+          Windows 360 Cleaner supports rule-guided agent help and a no-agent,
+          double-click route. It scans locally, separates evidence-backed 360/Qihoo
+          targets from findings that still need judgment, and acts only after you
+          review and explicitly approve exact targets.
+        </p>
+        <div class="hero-actions" aria-label="Get started">
+          <a class="button button-primary" href="https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip">Download repository ZIP</a>
+          <a class="button button-secondary" href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.en.md">Read the beginner guide</a>
+        </div>
+        <p class="local-note">This is the project introduction. Scans and reports run locally on your Windows PC.</p>
+      </div>
+
+      <figure class="hero-figure">
+        <img
+          src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg"
+          width="1600"
+          height="640"
+          alt="An AI agent follows four steps: scan, human review, exact cleanup, and verification"
+        >
+        <figcaption>
+          <span>A scan is not approval</span>
+          <span>Removal is not verification</span>
+        </figcaption>
+      </figure>
+    </section>
+
+    <dl class="fact-strip shell" aria-label="Project facts">
+      <div>
+        <dt>System</dt>
+        <dd>Windows 10 / 11</dd>
+      </div>
+      <div>
+        <dt>Runtime</dt>
+        <dd>PowerShell 5.1+</dd>
+      </div>
+      <div>
+        <dt>License</dt>
+        <dd>MIT</dd>
+      </div>
+      <div>
+        <dt>Default</dt>
+        <dd>Scan first, never auto-remove</dd>
+      </div>
+    </dl>
+
+    <section class="section shell" id="first-run" aria-labelledby="first-run-title">
+      <div class="section-heading">
+        <p>Your first run</p>
+        <h2 id="first-run-title">Follow all four steps and review the report</h2>
+      </div>
+
+      <ol class="step-list">
+        <li>
+          <span class="step-number" aria-hidden="true">1</span>
+          <div>
+            <h3>Download and extract</h3>
+            <p>Download the ZIP from the official GitHub repository and extract the complete folder. Avoid modified copies from third-party download sites.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">2</span>
+          <div>
+            <h3>Run Scan first</h3>
+            <p>Double-click <code>scripts\Scan-360.cmd</code>. Scan is read-only, does not require administrator access, and does not delete files.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">3</span>
+          <div>
+            <h3>Review the JSON report</h3>
+            <p>Inspect each path, evidence note, and classification. A filename containing “360” is not removal evidence by itself.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">4</span>
+          <div>
+            <h3>Approve before Remove; restart before Verify</h3>
+            <p>Remove handles only approved targets that are still confirmed. Removal is permanent. Restart Windows afterward, then run Verify to check for remaining Confirmed findings.</p>
+          </div>
+        </li>
+      </ol>
+
+      <p class="guide-callout">
+        Need step-by-step instructions, agent prompts, and troubleshooting?
+        <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.en.md">Open the complete beginner guide</a>.
+      </p>
+    </section>
+
+    <section class="section section-ink" id="safety" aria-labelledby="safety-title">
+      <div class="shell ink-grid">
+        <div class="section-heading section-heading-light">
+          <p>Read the scan correctly</p>
+          <h2 id="safety-title">Two labels define two different action boundaries</h2>
+          <p class="section-intro">Classification comes from local paths, product records, tasks, services, signatures, or file evidence. It is not a broad name match.</p>
+        </div>
+
+        <dl class="signal-list">
+          <div class="signal signal-confirmed">
+            <dt>Confirmed</dt>
+            <dd>The evidence meets the project's rules. It is still not removed automatically; you must review and explicitly approve the exact target.</dd>
+          </div>
+          <div class="signal signal-review">
+            <dt>ReviewOnly</dt>
+            <dd>The evidence is incomplete, ambiguous, driver-related, or from an offline Windows installation. The project reports it but does not remove it automatically.</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="section shell preserve-section" aria-labelledby="preserve-title">
+      <div class="section-heading">
+        <p>Preserved by default</p>
+        <h2 id="preserve-title">Normal files and personal data are not targets because of a name</h2>
+      </div>
+      <div class="preserve-grid">
+        <div>
+          <h3>Ordinary numeric files</h3>
+          <p>Photos, game assets, models, hashes, and other content whose only signal is “360” in a name are not product evidence.</p>
+        </div>
+        <div>
+          <h3>Windows and drivers</h3>
+          <p>Built-in screen savers, GPU and network drivers, Driver Genius, and unrelated applications are not broadly removed by keyword.</p>
+        </div>
+        <div>
+          <h3>Browser profiles</h3>
+          <p>Bookmarks, history, and sessions stay by default. Profile removal needs a backup, a separate scan option, and explicit approval.</p>
+        </div>
+        <div>
+          <h3>Other Windows installations</h3>
+          <p>A Windows installation on another mounted drive is scan-and-report only. This project provides no cross-system removal mode.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section shell privacy-section" aria-labelledby="privacy-title">
+      <div class="privacy-rule" aria-hidden="true"></div>
+      <div>
+        <p class="section-label">Privacy and reports</p>
+        <h2 id="privacy-title">Results stay local; inspect reports before sharing</h2>
+      </div>
+      <div class="privacy-copy">
+        <p>This introduction contains no analytics, advertising, or tracking scripts. Scan, Remove, and Verify run in local PowerShell and write results to a local JSON report.</p>
+        <p>
+          The computer and user fields are blank by default, but approval context,
+          user SIDs, and finding paths can still expose identity. Keep the original
+          local Scan report unchanged for Remove; create a separate redacted copy
+          for public help, and never use that edited copy for Remove.
+        </p>
+      </div>
+    </section>
+
+    <section class="section shell" id="faq" aria-labelledby="faq-title">
+      <div class="section-heading">
+        <p>Frequently asked questions</p>
+        <h2 id="faq-title">What to know before you begin</h2>
+      </div>
+      <div class="faq-list">
+        <article>
+          <h3>Is this a one-click cleaner?</h3>
+          <p>No. It is an AI agent skill package with double-click fallback scripts. The workflow always starts with a scan and human review before any removal decision.</p>
+        </article>
+        <article>
+          <h3>What software or problems can it check?</h3>
+          <p>
+            Current rules cover evidence-backed 360 Security Guard, 360 Browser
+            uninstall leftovers, 360 Huabao/Duohui screen savers, and related updater
+            tasks. They do not cover every version or variant; see the
+            <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/detection-catalog.md">detection catalog</a>
+            for the maintained scope.
+          </p>
+        </article>
+        <article>
+          <h3>Does Scan remove target software?</h3>
+          <p>No. Scan does not require administrator access and does not remove target software. It creates a new local JSON report for review.</p>
+        </article>
+        <article>
+          <h3>What should I do with ReviewOnly?</h3>
+          <p>Do not force-delete it. Keep the target, inspect its signature, version, and path, then open a GitHub Issue with redacted evidence if it remains unclear.</p>
+        </article>
+        <article>
+          <h3>Does a successful Remove prove everything is gone?</h3>
+          <p>Not by itself. The Remove action report and the post-restart Verify report are separate evidence stages. Check Verify for remaining Confirmed findings.</p>
+        </article>
+        <article>
+          <h3>Do I need an AI agent?</h3>
+          <p>No. Download the ZIP and follow the beginner guide to run Scan, review the report, and decide whether to continue with Remove and Verify.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell open-source" aria-labelledby="open-source-title">
+      <div>
+        <p class="section-label">Open source and contact</p>
+        <h2 id="open-source-title">Inspect the source and report reproducible problems</h2>
+      </div>
+      <div class="open-source-copy">
+        <p>
+          The project is open source under the MIT License. For uncertain findings,
+          prefer a public Issue containing only redacted paths, versions, and
+          digital-signature details.
+        </p>
+        <div class="text-links">
+          <a href="https://github.com/LongXL6/windows-360-cleaner">View the GitHub repository</a>
+          <a href="https://github.com/LongXL6/windows-360-cleaner/issues">Open or browse Issues</a>
+          <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/LICENSE">Read the MIT License</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-inner">
+      <p>Windows 360 Cleaner · Open-source AI agent skill</p>
+      <p>Scan, approval, removal, and verification are four separate steps.</p>
+    </div>
+  </footer>
+</body>
+</html>

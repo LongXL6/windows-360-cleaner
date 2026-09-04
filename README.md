@@ -6,7 +6,7 @@
   <img src="assets/readme/windows-360-cleaner-hero.jpg" alt="AI Agent 扫描、确认、安全清理并验证 Windows 软件的流程" width="100%">
 </p>
 
-<h1 align="center">Windows 360 Cleaner Skill</h1>
+<h1 align="center">Windows 360 Cleaner：360 软件扫描与清理 Skill</h1>
 
 <p align="center">
   给 Codex、豆包和其他 AI Agent 使用的 Windows 360/Qihoo 软件安全清理技能包<br>
@@ -22,17 +22,27 @@
 </p>
 
 > [!IMPORTANT]
-> 这是一个让 **AI Agent 读取并执行的 Skill 技能包**，不是一个需要小白研究按钮的独立清理软件。`scripts/` 中的 PowerShell 是技能包调用的确定性执行资源。
+> 这是一个开源 **AI Agent Skill 技能包**，包含可在 Windows 上运行的 PowerShell 脚本。你可以让 Agent 协助，也可以自己双击脚本开始扫描。支持 Windows 10/11 与 PowerShell 5.1+，无需购买服务。
 
-## 30 秒开始：复制下面整段给 Agent
+## 第一次使用：先拿到扫描报告
+
+1. [下载仓库 ZIP](https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip)，右键选择“全部解压”；进入解压后的文件夹。
+2. 打开 `scripts`，双击 **`Scan-360.cmd`**。扫描不删除软件，不需要管理员权限；结束后会写入 JSON 报告。
+3. 按窗口里的 **`Report:`** 路径找到报告（默认在桌面），先读结果，再决定是否继续。
+
+**扫描报告生成就是第一步完成。** `Confirmed` 表示有匹配证据，仍需你批准；`ReviewOnly` 表示仅供复核。看不懂时先停在这里。
+
+[新手图文步骤与常见问题](references/getting-started.md) · [让豆包帮忙解释](references/doubao.md) · [提交脱敏求助](https://github.com/LongXL6/windows-360-cleaner/issues/new?template=help.yml)
+
+浏览器书签和个人资料默认保留；后续 `Remove` 是永久删除，批准前请备份重要资料。报告中的路径仍可能包含个人信息，公开分享前先制作脱敏副本，保留本机原始 Scan JSON 不变。
+
+## 已在使用 Agent：复制下面这段
 
 ```text
-请把 https://github.com/LongXL6/windows-360-cleaner 当作一个 Skill 技能包使用，而不是普通清理工具。
-请先完整读取仓库根目录的 SKILL.md，并遵守其中所有安全边界；需要判断可疑目标时再读取 references。
-第一步只运行 Scan，不要删除，向我分别解释 Confirmed、ReviewOnly、会保留的正常文件和浏览器资料。
-只有在我看完扫描结果并明确批准后，才能执行 Remove；不要扩大允许路径，不要跨离线 Windows 系统删除。
-删除后先读取 Remove JSON 报告中的 Summary；只有 `ImmediateRescanComplete` 为 true 时，才能把其 Findings 称为即时剩余状态。然后运行 Verify，并从 Verify JSON 报告的 Findings 统计最终剩余的 Confirmed 数。
-最终请清楚输出：总共删除的对象数、文件数、目录数、清除文件的逻辑大小、服务已删除/待重启删除数、计划任务数、注册表键/值数、停止的进程数、厂商卸载器成功/失败/待定数、跳过/失败/待处理数、重试次数、未解决目标数、即时复检是否完成、Verify 后剩余 Confirmed 数。即使某项为 0 也要写出来；不要把文件逻辑大小误称为实际释放的磁盘空间。
+请使用 https://github.com/LongXL6/windows-360-cleaner，先完整读取 SKILL.md。
+确认你能否操作这台 Windows 的终端；能操作时只运行 Scan，不能时指导我双击 scripts\Scan-360.cmd。
+解释 Confirmed、ReviewOnly 和保留项后停止，等我明确批准才执行 Remove。不要按名字含 360 批量删除，浏览器资料默认保留。
+批准后使用同一份已审阅的原始 Scan 报告；删除后运行 Verify，并按 SKILL.md 输出完整统计和未解决项。
 ```
 
 ## 豆包用户：复制下面整段
@@ -44,8 +54,9 @@
 请先读取仓库根目录的 SKILL.md；不要只看 README，也不要根据文件名搜索并强删所有含 360 的内容。
 开始前先明确告诉我：你当前是否真的能够读取这个仓库、访问这台 Windows 电脑的本机 PowerShell，并运行命令。
 如果可以操作终端，第一步只能运行 Scan。解释 Confirmed、ReviewOnly 和会保留的正常文件后停止，等待我明确批准；未经批准绝对不能运行 Remove。
-如果不能操作终端，不要声称已经扫描或删除。请让我下载仓库 ZIP，双击 scripts\Scan-360.cmd，再把生成的 JSON 报告上传给你解释。之后仍须等待我的明确批准，才能指导我双击 Remove-360.cmd，并把同一份已审阅报告拖入窗口。
-完成删除后必须运行 Verify，并按照 SKILL.md 的 Required final output 列出所有清理统计，即使某项为 0 也要写出来。
+如果不能操作终端，不要声称已经扫描或删除。请让我下载并完整解压仓库 ZIP，双击 scripts\Scan-360.cmd，保留本机原始 JSON；只向云端提供另做的脱敏副本或节选，并说明节选不能证明完整结果。
+只有我审阅本机原始报告并明确批准后，才能指导我双击 Remove-360.cmd，把同一份未修改的原件拖入窗口；不能使用脱敏副本删除。
+完成删除后必须运行 Verify；需要向云端提供报告时也先做脱敏副本。按照 SKILL.md 的 Required final output 列出统计，包括零值；缺少原始完整数据时标明未知，不得编造。
 ```
 
 更详细的两种操作路线、上传报告时的隐私提醒和故障处理见 [豆包与通用 Agent 使用指南](references/doubao.md)。
@@ -99,7 +110,7 @@ Remove 报告中的 `Summary` 会记录：
 | 不乱杀正常软件 | 普通应用仅仅加载了目标 DLL 时不会被强停，默认要求重启后复查 |
 | 不跨系统乱删 | 其他磁盘上的离线 Windows 永远只有扫描模式 |
 | 报告不覆盖文件 | JSON 只能新建，拒绝覆盖已有报告或伪装成其他扩展名 |
-| 默认脱敏 | 报告不写入电脑名和 Windows 用户名 |
+| 省略独立身份字段 | 默认不填 `ComputerName` / `User`；路径和批准上下文仍可能包含个人信息 |
 
 ## 它会检查什么
 
@@ -115,7 +126,7 @@ Remove 报告中的 `Summary` 会记录：
 - 仅仅名字中含有数字 `360` 的文件或文件夹。
 - Windows 自带屏保，例如 `Bubbles.scr`、`PhotoScreensaver.scr`、`scrnsave.scr`。
 - 驱动精灵、显卡/网卡驱动、游戏目录和 Steam/iRacing 数字资源。
-- `winToolBox` 中独立的 `kantu`、`clear`、`pdf`、`zip` 工具，除非用户单独批准。
+- `winToolBox` 中独立的 `kantu`、`clear`、`pdf`、`zip` 工具；本工具没有删除这些独立组件的开关。
 - `360se6\User Data`、`360Chrome\Chrome\User Data`、`360ChromeX\Chrome\User Data` 和旧版 `360browser` 中的浏览器个人资料；程序目录会单独检测。
 - 其他 Windows 安装中的任何文件。
 
@@ -145,7 +156,7 @@ Agent 应先读取 [SKILL.md](SKILL.md)。只有需要判断检测证据时才�
 1. 点击 GitHub 页面右上角绿色的 **Code**。
 2. 点击 **Download ZIP** 并解压。
 3. 双击 `scripts\Scan-360.cmd`。
-4. 查看桌面生成的 JSON 报告和窗口里的扫描结果。
+4. 按窗口实际显示的 `Report:` 路径找到 JSON 报告（通常在桌面），查看扫描结果。
 
 扫描不会删除任何东西，也不需要管理员权限。
 
@@ -254,11 +265,18 @@ windows-360-cleaner/
 ├── SKILL.md                    # Agent 的入口与安全规则
 ├── agents/openai.yaml          # Codex 展示信息
 ├── scripts/                    # Scan / Remove / Verify 与隔离测试
-├── references/                 # 检测证据、豆包指南和疑难排查
+├── references/                 # 新手指南、检测证据、推广文案和发布维护
+├── docs/                       # 待发布的中英文静态介绍页
 ├── assets/readme/              # README 原创教学图片与微信二维码
 ├── README.en.md                # English guide
 └── README.md                   # 中文默认首页
 ```
+
+## 分享与维护
+
+准备介绍给朋友或发布到社交平台？从 [小红书 / X / 微信 / 抖音文案包](references/social-sharing.md) 选择一段修改即可；首次行动统一为“先扫描”。
+
+维护者可按 [网站发布与搜索发现指南](references/publishing.md) 预览 `docs/`，审阅后再开启 GitHub Pages、设置仓库介绍和提交 sitemap。页面文件已经备好，不代表网站已发布或 Google 已收录。
 
 ## 安全说明
 

@@ -1,0 +1,43 @@
+name: 使用求助 / Help with a scan
+description: 扫描、报告解读或验证问题；请只提供脱敏信息。
+title: "[Help] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先阅读 [新手指南](https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.md) / [English guide](https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.en.md)。
+        公开 Issue 所有人可见。不要上传原始 Scan JSON、用户名、私人路径、SID、密码或浏览器资料；原件留在本机，后续批准需要使用它。
+        Public issues are visible to everyone. Keep the original report locally and share only a redacted excerpt.
+  - type: input
+    id: environment
+    attributes:
+      label: Windows 与工具版本 / Windows and package version
+      description: 写 Windows 10/11、下载日期或 commit；知道 PowerShell 版本也可补充。
+    validations:
+      required: true
+  - type: dropdown
+    id: step
+    attributes:
+      label: 卡在哪一步 / Step
+      options:
+        - 下载或解压 / Download or extract
+        - Scan
+        - 解读报告 / Read the report
+        - Remove
+        - Verify
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 预期与实际情况 / Expected and actual behavior
+      description: 描述操作步骤、错误文字或脱敏后的 Confidence/Kind/Name/Reason；如是节选请注明。
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 发布前检查 / Before submitting
+      options:
+        - label: 我已检查隐私；没有附原始报告或未脱敏的个人信息。 / I checked for private data and did not attach the original report.
+          required: true
