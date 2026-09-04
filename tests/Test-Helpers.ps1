@@ -160,6 +160,11 @@ function New-Fake360CleanupRuntimeProvider {
         [string[]]$ProductEvidencePaths = @(),
         [hashtable]$RegistrySubKeys = @{},
         [hashtable]$RegistryValues = @{},
+        [hashtable]$PathItems = @{},
+        [hashtable]$PathChildren = @{},
+        [hashtable]$PathRemovals = @{},
+        [hashtable]$PathAclRepairs = @{},
+        [switch]$UseRealPathReads,
         [AllowEmptyCollection()][object[]]$ScheduledTasks = @(),
         [AllowEmptyCollection()][object[]]$Services = @(),
         [AllowEmptyCollection()][object[]]$Processes = @(),
@@ -181,6 +186,11 @@ function New-Fake360CleanupRuntimeProvider {
         ProductEvidencePaths  = $productEvidence
         RegistrySubKeysByPath = $RegistrySubKeys
         RegistryValuesByPath  = $RegistryValues
+        PathItemsByPath       = $PathItems
+        PathChildrenByPath    = $PathChildren
+        PathRemovalsByPath    = $PathRemovals
+        PathAclRepairsByPath  = $PathAclRepairs
+        RealPathReadsEnabled  = [bool]$UseRealPathReads
         ScheduledTaskItems    = @($ScheduledTasks)
         ServiceItems          = @($Services)
         ProcessItems          = @($Processes)
@@ -196,6 +206,71 @@ function New-Fake360CleanupRuntimeProvider {
                 Arguments = @($Path)
             })
             return $Context.ProductEvidencePaths.Contains($Path)
+        }
+        PathItem = {
+            param($Context, [string]$Path)
+            [void]$Context.Calls.Add([pscustomobject]@{
+                Operation = 'PathItem'
+                Arguments = @($Path)
+            })
+            if ($Context.PathItemsByPath.ContainsKey($Path)) {
+                $behavior = $Context.PathItemsByPath[$Path]
+                if ($behavior -is [scriptblock]) { return (& $behavior $Context $Path) }
+                if ($behavior -is [Exception]) { throw $behavior }
+                if ($null -eq $behavior) {
+                    throw (New-Object System.IO.FileNotFoundException -ArgumentList @('The fake path item is absent.', $Path))
+                }
+                return $behavior
+            }
+            if ($Context.RealPathReadsEnabled) {
+                return Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            }
+            throw (New-Object System.IO.FileNotFoundException -ArgumentList @('The fake path item is absent.', $Path))
+        }
+        PathChildren = {
+            param($Context, [string]$Path)
+            [void]$Context.Calls.Add([pscustomobject]@{
+                Operation = 'PathChildren'
+                Arguments = @($Path)
+            })
+            if ($Context.PathChildrenByPath.ContainsKey($Path)) {
+                $behavior = $Context.PathChildrenByPath[$Path]
+                if ($behavior -is [scriptblock]) { return @(& $behavior $Context $Path) }
+                if ($behavior -is [Exception]) { throw $behavior }
+                return @($behavior)
+            }
+            if ($Context.RealPathReadsEnabled) {
+                return @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+            }
+            return @()
+        }
+        RemovePath = {
+            param($Context, [string]$Path)
+            [void]$Context.Calls.Add([pscustomobject]@{
+                Operation = 'RemovePath'
+                Arguments = @($Path)
+            })
+            if (-not $Context.PathRemovalsByPath.ContainsKey($Path)) {
+                throw "No fake path-removal behavior was configured for: $Path"
+            }
+            $behavior = $Context.PathRemovalsByPath[$Path]
+            if ($behavior -is [scriptblock]) { return (& $behavior $Context $Path) }
+            if ($behavior -is [Exception]) { throw $behavior }
+            return $behavior
+        }
+        RepairPathAcl = {
+            param($Context, [string]$Path)
+            [void]$Context.Calls.Add([pscustomobject]@{
+                Operation = 'RepairPathAcl'
+                Arguments = @($Path)
+            })
+            if (-not $Context.PathAclRepairsByPath.ContainsKey($Path)) {
+                throw "No fake ACL-repair behavior was configured for: $Path"
+            }
+            $behavior = $Context.PathAclRepairsByPath[$Path]
+            if ($behavior -is [scriptblock]) { return (& $behavior $Context $Path) }
+            if ($behavior -is [Exception]) { throw $behavior }
+            return $behavior
         }
         RegistryPathExists = {
             param($Context, [string]$Path)

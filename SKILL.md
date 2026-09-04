@@ -67,11 +67,11 @@ After approval:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\Invoke-360Cleanup.ps1 -Mode Remove -ApprovedReport .\approved-scan.json -ConfirmRemoval -ConfirmationPhrase REMOVE-CONFIRMED-360
 ```
 
-The approved Scan report is the exact removal contract. The script elevates through UAC when needed, restores the scanned user's context, removes only findings that are both approved and still Confirmed, records new unapproved findings without removing them, and shows the final report again in the original window. It fails closed if the report changes across elevation, a path is outside the exact allowlist, contains a reparse point, exceeds the target-count safety limit, or loses its evidence.
+The approved Scan report is the exact removal contract. The script elevates through UAC when needed, restores the scanned user's context, removes only findings that are both approved and still Confirmed, records new unapproved findings without removing them, and shows the final report again in the original window. It fails closed if the report changes across elevation, a path is outside the exact allowlist, contains a reparse point, exceeds the target-count safety limit, or loses its evidence. If an otherwise valid path tree cannot be fully enumerated because access is denied, default removal skips that exact path, continues independent approved targets, and reports an attention-required incomplete outcome.
 
 Do not add `-IncludeBrowserProfiles` unless the user separately approves deleting browser data after backing up anything needed. Remove can enable it only when the approved Scan report used the same opt-in, and it also requires `-BrowserProfileConfirmation DELETE-360-BROWSER-DATA`; omitting the option during Remove safely preserves profiles from an opted-in Scan.
 
-Default removal does not restart Explorer, force-stop normal applications that loaded a target DLL, or take ownership of locked files. Read [references/troubleshooting.md](references/troubleshooting.md) before considering `-AllowExplorerRestart` or `-ForceLockedTargets`, explain the exact target and risk, and obtain a fresh approval.
+Default removal does not restart Explorer, force-stop normal applications that loaded a target DLL, or take ownership of locked files. Read [references/troubleshooting.md](references/troubleshooting.md) before considering `-AllowExplorerRestart` or `-ForceLockedTargets`, explain the exact target and risk, and obtain a fresh approval. Force processing must remain last: repair only a verified exact denied frontier without recursive ACL propagation, then rescan the complete approved root before deletion. Never reinterpret a reparse point, an unreadable path item, or an unknown inspection error as repairable access denial.
 
 ### 5. Verify
 
@@ -100,6 +100,7 @@ Lead with what was found, distinguish confirmed from review-only items, state ex
 - `TotalItemsRemoved`, `FilesRemoved`, `DirectoriesRemoved`, `LogicalBytesRemoved`, and `LogicalSizeRemoved`.
 - `ServicesRemoved`, `ServicesPendingRemoval`, `ScheduledTasksRemoved`, `RegistryKeysRemoved`, and `RegistryValuesRemoved`.
 - `ProcessesStopped`, `SkippedActions`, `FailedActions`, `PendingActions`, `RetryAttempts`, and `UnresolvedRetryTargets`.
+- `AccessDeniedPathTargets`, `AclRepairAttempts`, `AclRepairFailures`, and `UnresolvedPathTargets`.
 - `ApprovedConfirmed`, `EligibleApproved`, `NewSinceApproval`, `MissingSinceApproval`, and `NoLongerConfirmed`.
 - `PathTargetsRemoved`, `PartiallyCleanedPathTargets`, `ImmediateRemainingConfirmed`, `NoImmediateConfirmedFindings`, and `PathAccountingComplete`.
 

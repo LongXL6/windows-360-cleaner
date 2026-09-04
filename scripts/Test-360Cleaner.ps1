@@ -283,6 +283,7 @@ $additionalSuites = @(
     (Join-Path $PSScriptRoot '..\tests\Test-Detector.ps1')
     (Join-Path $PSScriptRoot '..\tests\Test-Elevation.ps1')
     (Join-Path $PSScriptRoot '..\tests\Test-Approval.ps1')
+    (Join-Path $PSScriptRoot '..\tests\Test-PathSafety.ps1')
 )
 foreach ($suitePath in $additionalSuites) {
     Write-Host ("Running {0}..." -f (Split-Path -Leaf $suitePath)) -ForegroundColor Cyan

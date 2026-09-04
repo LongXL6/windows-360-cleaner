@@ -105,7 +105,8 @@ Default removal records external module holders but does not force-stop normal o
 ## Path safety invariants
 
 - Every deletion must match the built-in exact path-shape allowlist in addition to being `Confirmed`.
-- Preflight every existing path target before changing services, tasks, registry entries, processes, or files; one unsafe path aborts the complete mutation plan.
+- Preflight every existing path target before changing services, tasks, registry entries, processes, or files. A detected reparse point, an unsafe path, or an unknown inspection failure aborts the complete mutation plan.
+- Classify an otherwise valid tree that cannot be enumerated because of its ACL as `AccessDenied`. Default removal skips only that path. `-ForceLockedTargets` may revisit it last, but only with exact-target ACL repair followed by a complete reparse-point rescan.
 - Reject drive roots, Windows, known-folder roots, user documents, broad temporary roots, and unrecognized descendants even if a malformed finding labels them confirmed.
 - Reject a target if any existing path component or descendant is a junction, symbolic link, mount point, or other reparse point.
 - Revalidate the exact path before initial deletion and every retry.

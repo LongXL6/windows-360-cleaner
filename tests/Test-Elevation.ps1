@@ -40,6 +40,10 @@ try {
         $expectedOperations = @(
             'IsAdministrator',
             'Is360File',
+            'PathChildren',
+            'PathItem',
+            'RemovePath',
+            'RepairPathAcl',
             'Processes',
             'RegistryPathExists',
             'RegistrySubKeys',
