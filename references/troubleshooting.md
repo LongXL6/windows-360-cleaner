@@ -43,7 +43,7 @@ The bundled script intentionally has no offline remove mode. Cleaning another in
 
 ## Browser profile is still present
 
-`360Chrome`, `360se6`, and `360browser` profiles are `ReviewOnly` by default because they may contain bookmarks, history, sessions, and other user data. Back up needed data first. Only then, with a separate approval, use both `-IncludeBrowserProfiles` and `-BrowserProfileConfirmation DELETE-360-BROWSER-DATA`.
+Only the `User Data` subtrees under `360se6`, `360Chrome`, and `360ChromeX`, plus the legacy `360browser` profile, are treated as browser data. They are `ReviewOnly` by default because they may contain bookmarks, history, sessions, and other user data. Browser `Application` directories are separate product findings and still require local 360/Qihoo file evidence. Back up needed data first. Only then, with a separate approval, use both `-IncludeBrowserProfiles` and `-BrowserProfileConfirmation DELETE-360-BROWSER-DATA`.
 
 ## Report path is rejected
 

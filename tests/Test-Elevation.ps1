@@ -39,6 +39,7 @@ try {
         $fake = New-Fake360CleanupRuntimeProvider
         $expectedOperations = @(
             'IsAdministrator',
+            'Is360File',
             'Processes',
             'RegistryPathExists',
             'RegistrySubKeys',
@@ -47,7 +48,7 @@ try {
             'Services',
             'StartElevatedProcess',
             'StopProcess'
-        )
+        ) | Sort-Object
         Assert-TestSequenceEqual -Expected $expectedOperations -Actual @($fake.Provider.Keys | Sort-Object) `
             -Message 'The fake runtime provider does not implement the complete production seam.'
         Assert-TestNotNull -Actual $fake.Context `

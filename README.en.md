@@ -96,7 +96,7 @@ The core rule is simple: **an agent may scan and explain automatically, but it m
 - Built-in Windows screen savers such as `Bubbles.scr`, `PhotoScreensaver.scr`, and `scrnsave.scr`.
 - Driver Genius, GPU/network drivers, games, and numeric Steam/iRacing assets.
 - Independent `kantu`, `clear`, `pdf`, and `zip` tools under `winToolBox` without separate approval.
-- Browser profiles under `360Chrome`, `360se6`, and `360browser`.
+- Browser profiles under `360se6\User Data`, `360Chrome\Chrome\User Data`, `360ChromeX\Chrome\User Data`, and the legacy `360browser` path; program directories are detected separately.
 - Any file from another mounted Windows installation.
 
 ## Install as a Codex Skill

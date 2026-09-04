@@ -16,7 +16,7 @@ This repository is an agent skill package, not a standalone cleanup application.
 5. Restrict process termination to executables under confirmed target paths. Never kill a process because its command line contains a search term; the auditing shell itself may contain that term.
 6. Treat other mounted Windows installations as scan-only. The bundled script intentionally has no offline remove mode; a separate approval does not authorize bypassing that boundary.
 7. `winToolBox` is an Aolande/Huajun-family third-party toolbox, not a Microsoft or official 360 product. Treat it as PUP/bundleware only when local behavior supports that classification. Remove only a confirmed `SoftMgr*`/360 subtree, its updater persistence, and exact 360-linked updater binary. Preserve independent `kantu`, `clear`, `pdf`, and `zip` tools unless separately approved.
-8. Preserve 360 browser profiles by default because they can contain bookmarks, history, sessions, and other user data. Use the separate profile opt-in only after the user approves that exact data loss.
+8. Preserve 360 browser `User Data` profiles by default because they can contain bookmarks, history, sessions, and other user data. Detect browser `Application` directories separately as products. Use the separate profile opt-in only after the user approves that exact data loss.
 9. Never overwrite an existing report or non-JSON file. Reports omit the local computer and user identity unless the user explicitly requests it.
 10. Do not force-stop a normal application merely because it loaded a target DLL. Default to reboot-and-verify for locked targets; Explorer restart and ACL repair are separate advanced approvals.
 

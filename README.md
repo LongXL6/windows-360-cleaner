@@ -113,7 +113,7 @@ Remove 报告中的 `Summary` 会记录：
 - Windows 自带屏保，例如 `Bubbles.scr`、`PhotoScreensaver.scr`、`scrnsave.scr`。
 - 驱动精灵、显卡/网卡驱动、游戏目录和 Steam/iRacing 数字资源。
 - `winToolBox` 中独立的 `kantu`、`clear`、`pdf`、`zip` 工具，除非用户单独批准。
-- `360Chrome`、`360se6`、`360browser` 中的浏览器个人资料。
+- `360se6\User Data`、`360Chrome\Chrome\User Data`、`360ChromeX\Chrome\User Data` 和旧版 `360browser` 中的浏览器个人资料；程序目录会单独检测。
 - 其他 Windows 安装中的任何文件。
 
 ## 安装为 Codex Skill

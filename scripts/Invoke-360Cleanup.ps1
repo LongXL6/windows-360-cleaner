@@ -70,7 +70,7 @@ function Set-360CleanupRuntimeProvider {
     $allowedNames = @(
         'RegistryPathExists', 'RegistrySubKeys', 'RegistryValues',
         'ScheduledTasks', 'Services', 'Processes',
-        'IsAdministrator', 'StartElevatedProcess', 'StopProcess'
+        'IsAdministrator', 'StartElevatedProcess', 'StopProcess', 'Is360File'
     )
     $replacement = @{}
     foreach ($name in @($Provider.Keys)) {
@@ -701,18 +701,22 @@ function Get-SignerSubject {
 function Test-Is360File {
     param([string]$Path)
 
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
-    try {
-        $item = Get-Item -LiteralPath $Path -Force
-        $version = $item.VersionInfo
-        $metadata = '{0} {1} {2} {3}' -f $version.CompanyName, $version.ProductName, $version.FileDescription, $version.OriginalFilename
-        $signer = Get-SignerSubject $Path
-        return ($metadata -match '(?i)360\.cn|Qihoo|Qihu|奇虎|360安全|360软件管家|多绘屏保') -or
-            ($signer -match '(?i)Beijing Qihu Technology|Qihoo|奇虎')
-    }
-    catch {
-        return $false
-    }
+    return [bool](Invoke-360CleanupRuntimeProvider -Name 'Is360File' -ArgumentList @($Path) -Default {
+        param($CandidatePath)
+
+        if (-not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) { return $false }
+        try {
+            $item = Get-Item -LiteralPath $CandidatePath -Force
+            $version = $item.VersionInfo
+            $metadata = '{0} {1} {2} {3}' -f $version.CompanyName, $version.ProductName, $version.FileDescription, $version.OriginalFilename
+            $signer = Get-SignerSubject $CandidatePath
+            return ($metadata -match '(?i)360\.cn|Qihoo|Qihu|奇虎|360安全|360软件管家|多绘屏保') -or
+                ($signer -match '(?i)Beijing Qihu Technology|Qihoo|奇虎')
+        }
+        catch {
+            return $false
+        }
+    })
 }
 
 function Test-IsDuohuiFile {
@@ -866,13 +870,17 @@ function Get-360Findings {
         $exactPaths += @{ Name = '360Safe ProgramData'; Path = (Join-Path $programData '360safe'); Confirm = 'MachineData'; Reason = 'Exact 360Safe data directory paired with local 360/Qihoo file evidence.' }
     }
     if ($localAppData) {
-        $exactPaths += @{ Name = '360Chrome browser profile'; Path = (Join-Path $localAppData '360Chrome'); Confirm = 'BrowserProfile'; Reason = 'Browser profiles can contain bookmarks, history, saved sessions, and other user data.' }
+        $exactPaths += @{ Name = '360Chrome browser application'; Path = (Join-Path $localAppData '360Chrome\Chrome\Application'); Confirm = 'Product'; Reason = 'Exact 360Chrome Application directory with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360Chrome browser profile'; Path = (Join-Path $localAppData '360Chrome\Chrome\User Data'); Confirm = 'BrowserProfile'; Reason = '360Chrome User Data can contain bookmarks, history, saved sessions, and other user data.' }
+        $exactPaths += @{ Name = '360ChromeX browser application'; Path = (Join-Path $localAppData '360ChromeX\Chrome\Application'); Confirm = 'Product'; Reason = 'Exact 360ChromeX Application directory with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360ChromeX browser profile'; Path = (Join-Path $localAppData '360ChromeX\Chrome\User Data'); Confirm = 'BrowserProfile'; Reason = '360ChromeX User Data can contain bookmarks, history, saved sessions, and other user data.' }
         $exactPaths += @{ Name = 'Duohui screen saver'; Path = (Join-Path $localAppData 'dhpingbao'); Confirm = 'Duohui'; Reason = 'Known duohuipingbao installation path.' }
     }
     if ($roamingAppData) {
-        foreach ($name in @('360se6', '360browser')) {
-            $exactPaths += @{ Name = ($name + ' browser profile'); Path = (Join-Path $roamingAppData $name); Confirm = 'BrowserProfile'; Reason = 'Browser profiles can contain bookmarks, history, saved sessions, and other user data.' }
-        }
+        $exactPaths += @{ Name = '360se6 browser application'; Path = (Join-Path $roamingAppData '360se6\Application'); Confirm = 'Product'; Reason = 'Exact 360se6 Application directory with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360se6 browser profile'; Path = (Join-Path $roamingAppData '360se6\User Data'); Confirm = 'BrowserProfile'; Reason = '360se6 User Data can contain bookmarks, history, saved sessions, and other user data.' }
+        $exactPaths += @{ Name = '360browser legacy profile'; Path = (Join-Path $roamingAppData '360browser'); Confirm = 'BrowserProfile'; Reason = 'Legacy browser profiles can contain bookmarks, history, saved sessions, and other user data.' }
+        $exactPaths += @{ Name = '360 Software Manager UI kernel'; Path = (Join-Path $roamingAppData 'secoresdk\360se6'); Confirm = 'Product'; Reason = 'Exact secoresdk 360se6 product directory with local 360/Qihoo file evidence.' }
         foreach ($name in @('360Safe', '360GameAssistant', '360huabao', '360DrvMgrScrSaver')) {
             $exactPaths += @{ Name = $name; Path = (Join-Path $roamingAppData $name); Confirm = 'Product'; Reason = 'Exact current-user path with local 360/Qihoo file evidence.' }
         }
@@ -992,7 +1000,7 @@ function Get-360Findings {
             $properties = Get-360CleanupRegistryValues $key.PSPath
             $displayName = [string](Get-PropertyValue $properties 'DisplayName')
             $publisher = [string](Get-PropertyValue $properties 'Publisher')
-            $knownProductName = $displayName -match '(?i)^(360安全卫士|360 Total Security|360杀毒|360安全浏览器|360se|360极速浏览器|360Chrome|360软件管家|360压缩|360驱动大师|360游戏大厅|360桌面助手|360壁纸|360画报|多绘屏保)(\s|$|[0-9])'
+            $knownProductName = $displayName -match '(?i)^(360安全卫士|360 Total Security|360杀毒|360安全浏览器|360se|360极速浏览器|360ChromeX|360Chrome|360软件管家|360压缩|360驱动大师|360游戏大厅|360桌面助手|360壁纸|360画报|多绘屏保)(\s|$|[0-9])'
             $knownPublisher = $publisher -match '(?i)360\.cn|360安全中心|Qihoo|Qihu|奇虎'
             if (-not ($knownProductName -or $knownPublisher)) { continue }
 
@@ -1049,6 +1057,12 @@ function Get-360Findings {
                 Add-Finding $findings (New-Finding -Kind 'Startup' -Name $property.Name -Target $runRoot `
                     -Confidence 'Confirmed' -Reason ('Startup executable is under confirmed target: ' + $matchedRoot) `
                     -RemovalType 'RegistryValue' -ValueName $property.Name)
+            }
+            elseif ($property.Name -match '(?i)360|SoftMgr|huabao|duohuipingbao|sesvc' -or
+                ($executable -and $executable -match '(?i)360|SoftMgr|huabao|duohuipingbao|sesvc')) {
+                Add-Finding $findings (New-Finding -Kind 'Startup' -Name $property.Name -Target $runRoot `
+                    -Confidence 'ReviewOnly' -Reason 'Startup name/path matched a 360-family marker, but its executable was not under a confirmed target.' `
+                    -RemovalType 'None' -ValueName $property.Name)
             }
         }
     }
@@ -1148,8 +1162,11 @@ function Get-360Findings {
         if (Test-Path -LiteralPath $offlineUsers) {
             foreach ($profile in @(Get-ChildItem -LiteralPath $offlineUsers -Directory -Force -ErrorAction SilentlyContinue)) {
                 foreach ($relative in @(
-                    'AppData\Local\dhpingbao', 'AppData\Local\360Chrome', 'AppData\Local\Temp\duohuipingbao',
-                    'AppData\Roaming\360se6', 'AppData\Roaming\360browser', 'AppData\Roaming\360Safe',
+                    'AppData\Local\dhpingbao', 'AppData\Local\360Chrome\Chrome\Application',
+                    'AppData\Local\360Chrome\Chrome\User Data', 'AppData\Local\360ChromeX\Chrome\Application',
+                    'AppData\Local\360ChromeX\Chrome\User Data', 'AppData\Local\Temp\duohuipingbao',
+                    'AppData\Roaming\360se6\Application', 'AppData\Roaming\360se6\User Data',
+                    'AppData\Roaming\secoresdk\360se6', 'AppData\Roaming\360browser', 'AppData\Roaming\360Safe',
                     'AppData\Roaming\greencore'
                 )) {
                     $path = Join-Path $profile.FullName $relative
@@ -1190,12 +1207,20 @@ function Test-IsExpectedRemovalPath {
         [void]$exact.Add((Get-NormalPath (Join-Path $script:KnownFolders.ProgramData '360safe')))
     }
     if ($script:KnownFolders.LocalAppData) {
-        [void]$exact.Add((Get-NormalPath (Join-Path $script:KnownFolders.LocalAppData '360Chrome')))
+        foreach ($relative in @(
+            '360Chrome\Chrome\Application', '360Chrome\Chrome\User Data',
+            '360ChromeX\Chrome\Application', '360ChromeX\Chrome\User Data'
+        )) {
+            [void]$exact.Add((Get-NormalPath (Join-Path $script:KnownFolders.LocalAppData $relative)))
+        }
         [void]$exact.Add((Get-NormalPath (Join-Path $script:KnownFolders.LocalAppData 'dhpingbao')))
     }
     if ($script:KnownFolders.RoamingAppData) {
-        foreach ($name in @('360se6', '360browser', '360Safe', '360GameAssistant', '360huabao', '360DrvMgrScrSaver', 'greencore', 'GreenCore7z')) {
-            [void]$exact.Add((Get-NormalPath (Join-Path $script:KnownFolders.RoamingAppData $name)))
+        foreach ($relative in @(
+            '360se6\Application', '360se6\User Data', 'secoresdk\360se6', '360browser',
+            '360Safe', '360GameAssistant', '360huabao', '360DrvMgrScrSaver', 'greencore', 'GreenCore7z'
+        )) {
+            [void]$exact.Add((Get-NormalPath (Join-Path $script:KnownFolders.RoamingAppData $relative)))
         }
     }
     if ($script:KnownFolders.Temp) {
