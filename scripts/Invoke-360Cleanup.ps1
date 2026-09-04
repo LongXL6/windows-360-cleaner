@@ -1585,6 +1585,13 @@ function Get-360Findings {
             Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $serviceFinding `
                 -IdentityState $serviceIdentity)
         }
+        elseif ($toolboxConfirmed -and $toolboxRoot -and $executable -and
+            (Test-IsUnderPath $executable $toolboxRoot)) {
+            Add-Finding $findings (New-Finding -Kind 'Service' -Name $service.Name -Target $service.Name `
+                -Confidence 'ReviewOnly' `
+                -Reason 'Service executable is under a confirmed mixed winToolBox bundle, but this sibling toolbox service is not approved for removal.' `
+                -RemovalType 'None')
+        }
         elseif ($service.Name -match '(?i)360|SoftMgr|huabao|duohuipingbao' -or
             ($executable -and $executable -match '(?i)(?:^|[\\/])360[^\\/]*(?:[\\/]|$)|SoftMgr|huabao|duohuipingbao')) {
             Add-Finding $findings (New-Finding -Kind 'Service' -Name $service.Name -Target $service.Name `
@@ -3962,6 +3969,36 @@ function Invoke-ElevatedCleanup {
     return $childExitCode
 }
 
+function Invoke-360CleanupRemoveElevationBoundary {
+    param(
+        [string]$ScriptPath,
+        [string]$ApprovedReport,
+        [string]$ApprovedReportHash,
+        [string]$OutcomeRunId,
+        [string]$ReportPath,
+        [bool]$InternalElevatedChild = $false,
+        [bool]$IncludeBrowserProfiles = $false,
+        [bool]$AllowExplorerRestart = $false,
+        [bool]$ForceLockedTargets = $false,
+        [bool]$IncludeIdentityInReport = $false
+    )
+
+    $isAdministrator = Test-IsAdministrator
+    if ($InternalElevatedChild -and -not $isAdministrator) {
+        throw 'The elevated cleanup child is not running as an administrator.'
+    }
+    if ($isAdministrator) {
+        return [pscustomobject]@{ Handled = $false; ExitCode = 0 }
+    }
+
+    $elevatedExitCode = Invoke-ElevatedCleanup -ScriptPath $ScriptPath `
+        -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
+        -OutcomeRunId $OutcomeRunId -ReportPath $ReportPath `
+        -IncludeBrowserProfiles:$IncludeBrowserProfiles -AllowExplorerRestart:$AllowExplorerRestart `
+        -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport
+    return [pscustomobject]@{ Handled = $true; ExitCode = [int]$elevatedExitCode }
+}
+
 if ($InternalTestLibraryOnly) {
     if ($env:WINDOWS_360_CLEANER_TEST_MODE -cne 'ISOLATED-SAFETY-TEST') {
         throw 'InternalTestLibraryOnly is reserved for the bundled isolated safety suite.'
@@ -4025,17 +4062,14 @@ if (-not $ReportPath) {
 $ReportPath = Assert-SafeReportPath $ReportPath
 
 if ($Mode -eq 'Remove') {
-    $isAdministrator = Test-IsAdministrator
-    if ($InternalElevatedChild -and -not $isAdministrator) {
-        throw 'The elevated cleanup child is not running as an administrator.'
-    }
-    if (-not $isAdministrator) {
-        $elevatedExitCode = Invoke-ElevatedCleanup -ScriptPath $PSCommandPath `
-            -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
-            -OutcomeRunId $OutcomeRunId -ReportPath $ReportPath `
-            -IncludeBrowserProfiles:$IncludeBrowserProfiles -AllowExplorerRestart:$AllowExplorerRestart `
-            -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport
-        exit $elevatedExitCode
+    $elevationBoundary = Invoke-360CleanupRemoveElevationBoundary -ScriptPath $PSCommandPath `
+        -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
+        -OutcomeRunId $OutcomeRunId -ReportPath $ReportPath `
+        -InternalElevatedChild:$InternalElevatedChild -IncludeBrowserProfiles:$IncludeBrowserProfiles `
+        -AllowExplorerRestart:$AllowExplorerRestart -ForceLockedTargets:$ForceLockedTargets `
+        -IncludeIdentityInReport:$IncludeIdentityInReport
+    if ($elevationBoundary.Handled) {
+        exit $elevationBoundary.ExitCode
     }
 }
 
