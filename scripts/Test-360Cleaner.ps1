@@ -258,3 +258,14 @@ finally {
         Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+$additionalSuites = @(
+    (Join-Path $PSScriptRoot '..\tests\Test-Detector.ps1')
+    (Join-Path $PSScriptRoot '..\tests\Test-Elevation.ps1')
+)
+foreach ($suitePath in $additionalSuites) {
+    Write-Host ("Running {0}..." -f (Split-Path -Leaf $suitePath)) -ForegroundColor Cyan
+    & $suitePath -CleanerScriptPath $scriptPath
+}
+
+Write-Host 'All Windows 360 Cleaner test suites passed.' -ForegroundColor Green

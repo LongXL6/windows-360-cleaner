@@ -49,6 +49,119 @@ $script:KnownFolders = [ordered]@{
     Windows        = Split-Path -Parent ([Environment]::SystemDirectory)
 }
 
+$script:CleanupRuntimeProvider = $null
+$script:CleanupRuntimeProviderContext = $null
+
+function Set-360CleanupRuntimeProvider {
+    param(
+        [System.Collections.IDictionary]$Provider,
+        [object]$Context = $null
+    )
+
+    $allowedNames = @(
+        'RegistryPathExists', 'RegistrySubKeys', 'RegistryValues',
+        'ScheduledTasks', 'Services', 'Processes',
+        'IsAdministrator', 'StartElevatedProcess'
+    )
+    $replacement = @{}
+    foreach ($name in @($Provider.Keys)) {
+        $providerName = [string]$name
+        if ($allowedNames -notcontains $providerName) {
+            throw "Unknown cleanup runtime provider: $providerName"
+        }
+        if (-not ($Provider[$name] -is [scriptblock])) {
+            throw "Cleanup runtime provider '$providerName' must be a script block."
+        }
+        $replacement[$providerName] = $Provider[$name]
+    }
+    foreach ($requiredName in $allowedNames) {
+        if (-not $replacement.ContainsKey($requiredName)) {
+            throw "Cleanup runtime provider is missing required operation: $requiredName"
+        }
+    }
+    $script:CleanupRuntimeProvider = $replacement
+    $script:CleanupRuntimeProviderContext = $Context
+}
+
+function Reset-360CleanupRuntimeProvider {
+    $script:CleanupRuntimeProvider = $null
+    $script:CleanupRuntimeProviderContext = $null
+}
+
+function Invoke-360CleanupRuntimeProvider {
+    param(
+        [string]$Name,
+        [scriptblock]$Default,
+        [object[]]$ArgumentList = @()
+    )
+
+    if ($null -ne $script:CleanupRuntimeProvider) {
+        if (-not $script:CleanupRuntimeProvider.ContainsKey($Name)) {
+            throw "Cleanup runtime provider is missing required operation: $Name"
+        }
+        $implementation = $script:CleanupRuntimeProvider[$Name]
+        return & $implementation $script:CleanupRuntimeProviderContext @ArgumentList
+    }
+    return & $Default @ArgumentList
+}
+
+function Test-360CleanupRegistryPath {
+    param([string]$Path)
+
+    return [bool](Invoke-360CleanupRuntimeProvider -Name 'RegistryPathExists' -ArgumentList @($Path) -Default {
+        param($RegistryPath)
+        Test-Path -LiteralPath $RegistryPath
+    })
+}
+
+function Get-360CleanupRegistrySubKeys {
+    param([string]$Path)
+
+    return @(Invoke-360CleanupRuntimeProvider -Name 'RegistrySubKeys' -ArgumentList @($Path) -Default {
+        param($RegistryPath)
+        Get-ChildItem -LiteralPath $RegistryPath -ErrorAction SilentlyContinue
+    })
+}
+
+function Get-360CleanupRegistryValues {
+    param([string]$Path)
+
+    return Invoke-360CleanupRuntimeProvider -Name 'RegistryValues' -ArgumentList @($Path) -Default {
+        param($RegistryPath)
+        Get-ItemProperty -LiteralPath $RegistryPath -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-360CleanupScheduledTasks {
+    return @(Invoke-360CleanupRuntimeProvider -Name 'ScheduledTasks' -Default {
+        Get-ScheduledTask -ErrorAction SilentlyContinue
+    })
+}
+
+function Get-360CleanupServices {
+    return @(Invoke-360CleanupRuntimeProvider -Name 'Services' -Default {
+        Get-CimInstance Win32_Service -ErrorAction SilentlyContinue
+    })
+}
+
+function Get-360CleanupProcesses {
+    return @(Invoke-360CleanupRuntimeProvider -Name 'Processes' -Default {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue
+    })
+}
+
+function Start-360CleanupElevatedProcess {
+    param(
+        [string]$FilePath,
+        [string]$ArgumentLine
+    )
+
+    return Invoke-360CleanupRuntimeProvider -Name 'StartElevatedProcess' -ArgumentList @($FilePath, $ArgumentLine) -Default {
+        param($Executable, $Arguments)
+        Start-Process -FilePath $Executable -Verb RunAs -ArgumentList $Arguments -Wait -PassThru
+    }
+}
+
 function Get-NormalPath {
     param([string]$Path)
 
@@ -408,9 +521,9 @@ function Get-360Findings {
         'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
     )
     foreach ($root in $uninstallRoots) {
-        if (-not (Test-Path -LiteralPath $root)) { continue }
-        foreach ($key in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
-            $properties = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+        if (-not (Test-360CleanupRegistryPath $root)) { continue }
+        foreach ($key in @(Get-360CleanupRegistrySubKeys $root)) {
+            $properties = Get-360CleanupRegistryValues $key.PSPath
             $displayName = [string](Get-PropertyValue $properties 'DisplayName')
             $publisher = [string](Get-PropertyValue $properties 'Publisher')
             $knownProductName = $displayName -match '(?i)^(360安全卫士|360 Total Security|360杀毒|360安全浏览器|360se|360极速浏览器|360Chrome|360软件管家|360压缩|360驱动大师|360游戏大厅|360桌面助手|360壁纸|360画报|多绘屏保)(\s|$|[0-9])'
@@ -442,8 +555,8 @@ function Get-360Findings {
         'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
     )
     foreach ($runRoot in $runRoots) {
-        if (-not (Test-Path -LiteralPath $runRoot)) { continue }
-        $properties = Get-ItemProperty -LiteralPath $runRoot -ErrorAction SilentlyContinue
+        if (-not (Test-360CleanupRegistryPath $runRoot)) { continue }
+        $properties = Get-360CleanupRegistryValues $runRoot
         foreach ($property in $properties.PSObject.Properties) {
             if ($property.Name -match '^PS') { continue }
             $executable = Get-CommandExecutable ([string]$property.Value)
@@ -460,8 +573,8 @@ function Get-360Findings {
     }
 
     $desktopKey = 'HKCU:\Control Panel\Desktop'
-    if (Test-Path -LiteralPath $desktopKey) {
-        $desktop = Get-ItemProperty -LiteralPath $desktopKey -ErrorAction SilentlyContinue
+    if (Test-360CleanupRegistryPath $desktopKey) {
+        $desktop = Get-360CleanupRegistryValues $desktopKey
         $screenSaver = Get-NormalPath ([string](Get-PropertyValue $desktop 'SCRNSAVE.EXE'))
         foreach ($confirmedRoot in $confirmedRoots) {
             if ($screenSaver -and (Test-IsUnderPath $screenSaver $confirmedRoot)) {
@@ -474,7 +587,7 @@ function Get-360Findings {
     }
 
     try {
-        foreach ($task in @(Get-ScheduledTask -ErrorAction SilentlyContinue)) {
+        foreach ($task in @(Get-360CleanupScheduledTasks)) {
             $actionExecutables = @($task.Actions | ForEach-Object { Get-NormalPath ([string]$_.Execute) } | Where-Object { $_ })
             $matchedRoot = $null
             foreach ($action in $actionExecutables) {
@@ -496,7 +609,7 @@ function Get-360Findings {
     }
     catch {}
 
-    foreach ($service in @(Get-CimInstance Win32_Service -ErrorAction SilentlyContinue)) {
+    foreach ($service in @(Get-360CleanupServices)) {
         $executable = Get-CommandExecutable ([string]$service.PathName)
         $matchedRoot = $null
         foreach ($confirmedRoot in $confirmedRoots) {
@@ -522,7 +635,7 @@ function Get-360Findings {
     }
 
     $confirmedRoots = Get-ConfirmedPathRoots @($findings)
-    foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+    foreach ($process in @(Get-360CleanupProcesses)) {
         $path = Get-NormalPath ([string]$process.ExecutablePath)
         if (-not $path) { continue }
         foreach ($confirmedRoot in $confirmedRoots) {
@@ -571,9 +684,11 @@ function Get-360Findings {
 }
 
 function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    return [bool](Invoke-360CleanupRuntimeProvider -Name 'IsAdministrator' -Default {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    })
 }
 
 function Test-IsExpectedRemovalPath {
@@ -912,7 +1027,7 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'DeleteTask' ($finding.ValueName + $finding.Target) 'Failed' $_.Exception.Message }
     }
 
-    foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+    foreach ($process in @(Get-360CleanupProcesses)) {
         $executable = Get-NormalPath ([string]$process.ExecutablePath)
         if (-not $executable) { continue }
         $shouldStop = $false
@@ -1216,7 +1331,7 @@ if ($Mode -eq 'Remove') {
         if ($ForceLockedTargets) { $argumentParts += '-ForceLockedTargets' }
         if ($IncludeIdentityInReport) { $argumentParts += '-IncludeIdentityInReport' }
         $argumentLine = $argumentParts -join ' '
-        $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $argumentLine -Wait -PassThru
+        $process = Start-360CleanupElevatedProcess -FilePath 'powershell.exe' -ArgumentLine $argumentLine
         exit $process.ExitCode
     }
 }
