@@ -66,6 +66,8 @@ Do not delete every directory named `360`. Games and asset libraries often use t
 
 - `winLauncher.exe`, `WinTray.exe`, `kpicservice.exe`, `kstanddiskservice.exe`, and `fpprotect.exe` signed by `Beijing AoLanDe Information Technology Co., Ltd.`.
 - Service names such as `KPICService_huajun`, `HJPDFSvc`, and `hjkstanddiskservice`.
+- Updater-service names observed in this bundle include `WinToolBoxUpdateSrv`, `KaoZipUpdateSrv`, `CClearUpdateSrv`, `pdfReaderUpdateSrv`, and `WinInterceptUpdateSrv`.
+- `Tools\LockScreen` is an observed advertising component. Its presence is inventory evidence only and does not authorize removing that directory.
 - `KitTip.dll` and `cssdk.dll` signed by `Beijing Qihu Technology Co., Ltd.`; `cssdk.dll` may report `CompanyName=360.cn` and `ProductName=统计组件`.
 
 Do not delete the complete `%LOCALAPPDATA%\winToolBox` tree merely because these mixed components exist.
@@ -85,6 +87,8 @@ When confirmed, remove only:
 - `greencore` and roaming `SoftMgr*` caches only when those exact directories contain their own signed/identified evidence; a nearby confirmed bundle does not authorize deleting a name-only cache.
 
 Preserve `Tools\kantu`, `Tools\clear`, `Tools\pdf`, and `Tools\zip` unless the user separately approves removing them.
+
+When the mixed toolbox bundle is confirmed, services whose executable is exactly within `%LOCALAPPDATA%\winToolBox` are listed as `ReviewOnly` for visibility. This does not approve deleting those sibling services or their tools.
 
 Root-level Qihu-signed DLLs can confirm only those exact DLL files. They do not by themselves authorize deleting `winToolBoxSrv.exe`, roaming `SoftMgr*` caches, or the whole toolbox; a confirmed SoftMgr subtree is required for that paired updater chain.
 

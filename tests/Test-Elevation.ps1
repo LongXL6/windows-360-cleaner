@@ -107,6 +107,54 @@ try {
             -Message 'The elevated process provider received different arguments.'
     }
 
+    Invoke-TestCase -Run $run -Name 'non-administrator removal crosses the elevation boundary exactly once' -Test {
+        $fake = New-Fake360CleanupRuntimeProvider -IsAdministrator $false -ElevatedExitCode 23
+        Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+        try {
+            $result = Invoke-360CleanupRemoveElevationBoundary `
+                -ScriptPath 'C:\Fixture\Invoke-360Cleanup.ps1' `
+                -ApprovedReport 'C:\Fixture\approved.json' -ApprovedReportHash ('A1' * 32) `
+                -OutcomeRunId ('B2' * 16) -ReportPath 'C:\Fixture\missing-outcome.json'
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+
+        Assert-TestTrue -Condition $result.Handled `
+            -Message 'A non-administrator Remove run did not cross the elevation boundary.'
+        Assert-TestEqual -Expected 23 -Actual $result.ExitCode `
+            -Message 'The elevation boundary did not preserve the child failure exit code.'
+        $administratorCalls = @(Get-Fake360CleanupCalls -Fake $fake -Operation 'IsAdministrator')
+        Assert-TestEqual -Expected 1 -Actual $administratorCalls.Count `
+            -Message 'The elevation boundary must check administrator status exactly once.'
+        $startCalls = @(Get-Fake360CleanupCalls -Fake $fake -Operation 'StartElevatedProcess')
+        Assert-TestEqual -Expected 1 -Actual $startCalls.Count `
+            -Message 'A non-administrator Remove run must start exactly one elevated process.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'administrator removal stays on the current process' -Test {
+        $fake = New-Fake360CleanupRuntimeProvider -IsAdministrator $true -ElevatedExitCode 23
+        Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+        try {
+            $result = Invoke-360CleanupRemoveElevationBoundary `
+                -ScriptPath 'C:\Fixture\Invoke-360Cleanup.ps1' `
+                -ApprovedReport 'C:\Fixture\approved.json' -ApprovedReportHash ('A1' * 32) `
+                -OutcomeRunId ('B2' * 16) -ReportPath 'C:\Fixture\missing-outcome.json'
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+
+        Assert-TestFalse -Condition $result.Handled `
+            -Message 'An administrator Remove run was incorrectly delegated to elevation.'
+        $administratorCalls = @(Get-Fake360CleanupCalls -Fake $fake -Operation 'IsAdministrator')
+        Assert-TestEqual -Expected 1 -Actual $administratorCalls.Count `
+            -Message 'The elevation boundary must check administrator status exactly once.'
+        $startCalls = @(Get-Fake360CleanupCalls -Fake $fake -Operation 'StartElevatedProcess')
+        Assert-TestEqual -Expected 0 -Actual $startCalls.Count `
+            -Message 'An administrator Remove run must not start an elevated process.'
+    }
+
     Invoke-TestCase -Run $run -Name 'reset restores the default administrator implementation' -Test {
         $fake = New-Fake360CleanupRuntimeProvider -IsAdministrator $false
         Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context

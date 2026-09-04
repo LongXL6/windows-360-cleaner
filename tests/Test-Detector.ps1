@@ -766,6 +766,98 @@ try {
         }
     }
 
+    Invoke-TestCase -Run $run -Name 'confirmed winToolBox surfaces sibling services without approving removal' -Test {
+        $toolboxRoot = Join-Path $script:KnownFolders.LocalAppData 'winToolBox'
+        $softMgrRoot = Join-Path $toolboxRoot 'Tools\SoftMgrFixture'
+        $softMgrMarker = Join-Path $softMgrRoot '360Base.dll'
+        New-Item -ItemType Directory -Path $softMgrRoot -Force | Out-Null
+        Set-Content -LiteralPath $softMgrMarker -Value 'ISOLATED-TOOLBOX-MARKER'
+
+        $serviceLayouts = @(
+            [pscustomobject]@{ Name = 'WinToolBoxUpdateSrv'; RelativePath = 'winToolBoxSrv.exe'; ExpectedConfidence = 'Confirmed'; ExpectedRemoval = 'Service' },
+            [pscustomobject]@{ Name = 'KaoZipUpdateSrv'; RelativePath = 'Tools\zip\kUpdateSrv2.exe'; ExpectedConfidence = 'ReviewOnly'; ExpectedRemoval = 'None' },
+            [pscustomobject]@{ Name = 'CClearUpdateSrv'; RelativePath = 'Tools\clear\cClearSvr.exe'; ExpectedConfidence = 'ReviewOnly'; ExpectedRemoval = 'None' },
+            [pscustomobject]@{ Name = 'pdfReaderUpdateSrv'; RelativePath = 'Tools\pdf\pdfReaderSrv.exe'; ExpectedConfidence = 'ReviewOnly'; ExpectedRemoval = 'None' },
+            [pscustomobject]@{ Name = 'WinInterceptUpdateSrv'; RelativePath = 'Tools\LockScreen\winInterceptSer.exe'; ExpectedConfidence = 'ReviewOnly'; ExpectedRemoval = 'None' }
+        )
+        $services = @($serviceLayouts | ForEach-Object {
+            [pscustomobject]@{
+                Name = $_.Name
+                PathName = ('"{0}" --service' -f (Join-Path $toolboxRoot $_.RelativePath))
+                StartName = 'LocalSystem'
+                ServiceType = 'Own Process'
+                StartMode = 'Auto'
+            }
+        })
+        $fake = New-Fake360CleanupRuntimeProvider -ProductEvidencePaths @($softMgrMarker) -Services $services
+
+        Set-360CleanupRuntimeProvider -Provider $fake.Provider -Context $fake.Context
+        try {
+            $findings = @(Get-360Findings)
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+
+        foreach ($layout in $serviceLayouts) {
+            $serviceFinding = @($findings | Where-Object {
+                $_.Kind -eq 'Service' -and $_.Name -eq $layout.Name
+            })
+            Assert-TestEqual -Expected 1 -Actual $serviceFinding.Count `
+                -Message ("The {0} toolbox service was not surfaced exactly once." -f $layout.Name)
+            Assert-TestEqual -Expected $layout.ExpectedConfidence -Actual $serviceFinding[0].Confidence `
+                -Message ("The {0} toolbox service received the wrong confidence." -f $layout.Name)
+            Assert-TestEqual -Expected $layout.ExpectedRemoval -Actual $serviceFinding[0].RemovalType `
+                -Message ("The {0} toolbox service received the wrong removal type." -f $layout.Name)
+        }
+    }
+
+    Invoke-TestCase -Run $run -Name 'winToolBox service visibility requires confirmation and an exact root boundary' -Test {
+        $toolboxRoot = Join-Path $script:KnownFolders.LocalAppData 'winToolBox'
+        $softMgrRoot = Join-Path $toolboxRoot 'Tools\SoftMgrFixture'
+        $softMgrMarker = Join-Path $softMgrRoot '360Conf.dll'
+        New-Item -ItemType Directory -Path $softMgrRoot -Force | Out-Null
+        Set-Content -LiteralPath $softMgrMarker -Value 'ISOLATED-TOOLBOX-BOUNDARY-MARKER'
+
+        $insideService = [pscustomobject]@{
+            Name = 'CClearUpdateSrv'; PathName = ('"{0}" --service' -f (Join-Path $toolboxRoot 'Tools\clear\cClearSvr.exe'))
+            StartName = 'LocalSystem'; ServiceType = 'Own Process'; StartMode = 'Auto'
+        }
+        $prefixedService = [pscustomobject]@{
+            Name = 'KaoZipUpdateSrv'; PathName = ('"{0}" --service' -f (Join-Path ($toolboxRoot + '-backup') 'Tools\zip\kUpdateSrv2.exe'))
+            StartName = 'LocalSystem'; ServiceType = 'Own Process'; StartMode = 'Auto'
+        }
+
+        $unconfirmedFake = New-Fake360CleanupRuntimeProvider -Services @($insideService)
+        Set-360CleanupRuntimeProvider -Provider $unconfirmedFake.Provider -Context $unconfirmedFake.Context
+        try {
+            $unconfirmedFindings = @(Get-360Findings)
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+        Assert-TestEqual -Expected 0 -Actual @($unconfirmedFindings | Where-Object {
+            $_.Kind -eq 'Service' -and $_.Name -eq $insideService.Name
+        }).Count -Message 'A toolbox path alone surfaced a service before the mixed bundle was confirmed.'
+
+        $confirmedFake = New-Fake360CleanupRuntimeProvider -ProductEvidencePaths @($softMgrMarker) `
+            -Services @($insideService, $prefixedService)
+        Set-360CleanupRuntimeProvider -Provider $confirmedFake.Provider -Context $confirmedFake.Context
+        try {
+            $confirmedFindings = @(Get-360Findings)
+        }
+        finally {
+            Reset-360CleanupRuntimeProvider
+        }
+        Assert-TestEqual -Expected 1 -Actual @($confirmedFindings | Where-Object {
+            $_.Kind -eq 'Service' -and $_.Name -eq $insideService.Name -and
+            $_.Confidence -eq 'ReviewOnly' -and $_.RemovalType -eq 'None'
+        }).Count -Message 'The in-root sibling toolbox service was not surfaced as review-only.'
+        Assert-TestEqual -Expected 0 -Actual @($confirmedFindings | Where-Object {
+            $_.Kind -eq 'Service' -and $_.Name -eq $prefixedService.Name
+        }).Count -Message 'A path sharing only the winToolBox prefix crossed the exact root boundary.'
+    }
+
     Invoke-TestCase -Run $run -Name 'detectors consume the injected discovery provider' -Test {
         $uninstallRoot = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall'
         $uninstallKey = $uninstallRoot + '\FixtureProduct'
