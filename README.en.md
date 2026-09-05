@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.md">简体中文</a> · <strong>English</strong>
+  <a href="README.md">简体中文</a> · <strong>English</strong> · <a href="https://longxl6.github.io/windows-360-cleaner/en/">Project website</a>
 </p>
 
 <p align="center">
@@ -190,7 +190,7 @@ GitHub Actions runs the same safety suite on every change.
 
 Use the editable [X, Xiaohongshu, WeChat, and Douyin copy](references/social-sharing.md) to introduce the project. Keep the first action read-only scanning.
 
-The [publishing and search guide](references/publishing.md) covers previewing the bilingual static pages in `docs/`, enabling GitHub Pages after review, and submitting a sitemap. Prepared page files do not mean a deployed or Google-indexed website.
+The bilingual [project website](https://longxl6.github.io/windows-360-cleaner/en/) is live on GitHub Pages. The [publishing and search guide](references/publishing.md) covers previewing `docs/`, maintaining pages and sharing details, and Search Console verification and sitemap submission. A live website does not by itself establish Google indexing.
 
 ## Contact
 

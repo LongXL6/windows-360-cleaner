@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>简体中文</strong> · <a href="README.en.md">English</a>
+  <strong>简体中文</strong> · <a href="README.en.md">English</a> · <a href="https://longxl6.github.io/windows-360-cleaner/">项目网站</a>
 </p>
 
 <p align="center">
@@ -266,7 +266,7 @@ windows-360-cleaner/
 ├── agents/openai.yaml          # Codex 展示信息
 ├── scripts/                    # Scan / Remove / Verify 与隔离测试
 ├── references/                 # 新手指南、检测证据、推广文案和发布维护
-├── docs/                       # 待发布的中英文静态介绍页
+├── docs/                       # GitHub Pages 中英文静态介绍页
 ├── assets/readme/              # README 原创教学图片与微信二维码
 ├── README.en.md                # English guide
 └── README.md                   # 中文默认首页
@@ -276,7 +276,7 @@ windows-360-cleaner/
 
 准备介绍给朋友或发布到社交平台？从 [小红书 / X / 微信 / 抖音文案包](references/social-sharing.md) 选择一段修改即可；首次行动统一为“先扫描”。
 
-维护者可按 [网站发布与搜索发现指南](references/publishing.md) 预览 `docs/`，审阅后再开启 GitHub Pages、设置仓库介绍和提交 sitemap。页面文件已经备好，不代表网站已发布或 Google 已收录。
+中英文 [项目网站](https://longxl6.github.io/windows-360-cleaner/) 已通过 GitHub Pages 发布。维护者可按 [网站发布与搜索发现指南](references/publishing.md) 预览 `docs/`、维护页面与分享信息，并查看 Search Console 验证和 sitemap 提交步骤。网站可访问不代表 Google 已收录。
 
 ## 安全说明
 
