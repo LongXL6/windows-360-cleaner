@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Windows 360 Cleaner：先扫描、再确认的清理技能</title>
+  <meta name="description" content="面向 Windows 10/11 的开源 AI Agent 技能包：只读扫描 360/Qihoo 组件，区分 Confirmed 与 ReviewOnly，经人工确认后精确删除，并用 JSON 报告和 Verify 复核。">
+
+  <link rel="canonical" href="https://longxl6.github.io/windows-360-cleaner/">
+  <link rel="alternate" hreflang="zh-Hans" href="https://longxl6.github.io/windows-360-cleaner/">
+  <link rel="alternate" hreflang="en" href="https://longxl6.github.io/windows-360-cleaner/en/">
+  <link rel="alternate" hreflang="x-default" href="https://longxl6.github.io/windows-360-cleaner/">
+  <link rel="stylesheet" href="./styles.css">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Windows 360 Cleaner">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:title" content="Windows 360 Cleaner：先扫描、再确认的清理技能">
+  <meta property="og:description" content="先只读扫描，再由你确认精确目标；保留证据不足的项目，并用 JSON 报告和 Verify 复核结果。">
+  <meta property="og:url" content="https://longxl6.github.io/windows-360-cleaner/">
+  <meta property="og:image" content="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg">
+  <meta property="og:image:width" content="1600">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="Windows 360 Cleaner 从扫描、人工确认到验证的安全流程">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Windows 360 Cleaner：先扫描、再确认的清理技能">
+  <meta name="twitter:description" content="开源的 Windows 360/Qihoo 清理技能包：只读扫描、人工确认、精确处理、报告复核。">
+  <meta name="twitter:image" content="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg">
+  <meta name="twitter:image:alt" content="Windows 360 Cleaner 从扫描、人工确认到验证的安全流程">
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "@id": "https://longxl6.github.io/windows-360-cleaner/#software",
+    "name": "Windows 360 Cleaner Skill",
+    "description": "面向 AI Agent 的开源 Windows 360/Qihoo 软件审计与精确清理技能包。",
+    "url": "https://longxl6.github.io/windows-360-cleaner/",
+    "image": "https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg",
+    "codeRepository": "https://github.com/LongXL6/windows-360-cleaner",
+    "programmingLanguage": "PowerShell",
+    "license": "https://github.com/LongXL6/windows-360-cleaner/blob/main/LICENSE",
+    "inLanguage": "zh-Hans",
+    "isAccessibleForFree": true
+  }
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="./" aria-label="Windows 360 Cleaner 中文首页">
+        <span class="brand-mark" aria-hidden="true">360</span>
+        <span>Windows 360 Cleaner</span>
+      </a>
+      <nav class="site-nav" aria-label="主要导航">
+        <a href="#first-run">新手流程</a>
+        <a href="#safety">安全边界</a>
+        <a href="#faq">常见问题</a>
+        <a class="language-link" href="./en/" lang="en" hreflang="en">English</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <section class="hero shell" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <p class="context-line">可让 AI Agent 协助，也可按指南直接双击脚本</p>
+        <h1 id="page-title">清理 360 软件，从一次扫描开始</h1>
+        <p class="hero-lede">
+          Windows 360 Cleaner 既支持 Agent 按规则协助，也提供无需 Agent 的双击流程。
+          它先在本机扫描，把证据充分的目标与待人工判断的项目分开；只有你审阅报告并明确批准后，才会处理仍然匹配的精确目标。
+        </p>
+        <div class="hero-actions" aria-label="开始使用">
+          <a class="button button-primary" href="https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip">下载仓库 ZIP</a>
+          <a class="button button-secondary" href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.md">阅读中文新手指南</a>
+        </div>
+        <p class="local-note">这是项目介绍页。扫描和报告都在你的 Windows 电脑上本地完成。</p>
+      </div>
+
+      <figure class="hero-figure">
+        <img
+          src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg"
+          width="1600"
+          height="640"
+          alt="AI Agent 按扫描、人工确认、精确清理和验证四步处理 Windows 360 软件"
+        >
+        <figcaption>
+          <span>扫描不是批准</span>
+          <span>删除不是验证</span>
+        </figcaption>
+      </figure>
+    </section>
+
+    <dl class="fact-strip shell" aria-label="项目基本信息">
+      <div>
+        <dt>系统</dt>
+        <dd>Windows 10 / 11</dd>
+      </div>
+      <div>
+        <dt>运行环境</dt>
+        <dd>PowerShell 5.1+</dd>
+      </div>
+      <div>
+        <dt>许可证</dt>
+        <dd>MIT</dd>
+      </div>
+      <div>
+        <dt>默认原则</dt>
+        <dd>先扫描，不直接删除</dd>
+      </div>
+    </dl>
+
+    <section class="section shell" id="first-run" aria-labelledby="first-run-title">
+      <div class="section-heading">
+        <p>第一次使用</p>
+        <h2 id="first-run-title">按顺序完成四步，不要跳过报告审阅</h2>
+      </div>
+
+      <ol class="step-list">
+        <li>
+          <span class="step-number" aria-hidden="true">1</span>
+          <div>
+            <h3>下载并解压</h3>
+            <p>从官方 GitHub 仓库下载 ZIP，完整解压后再运行脚本。不要使用不明转载或修改版。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">2</span>
+          <div>
+            <h3>先运行 Scan</h3>
+            <p>双击 <code>scripts\Scan-360.cmd</code>。Scan 是只读审计，不需要管理员权限，也不会删除文件。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">3</span>
+          <div>
+            <h3>审阅 JSON 报告</h3>
+            <p>逐项查看路径、证据和分类。不要把文件名里出现“360”当作可删除依据。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">4</span>
+          <div>
+            <h3>明确批准后再 Remove，重启后 Verify</h3>
+            <p>Remove 只处理已批准且仍被确认的目标。删除是永久操作；完成后建议重启 Windows，再运行 Verify 检查是否仍有 Confirmed 项。</p>
+          </div>
+        </li>
+      </ol>
+
+      <p class="guide-callout">
+        需要逐步说明、Agent 提示词和故障处理？
+        <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.md">打开完整中文新手指南</a>。
+      </p>
+    </section>
+
+    <section class="section section-ink" id="safety" aria-labelledby="safety-title">
+      <div class="shell ink-grid">
+        <div class="section-heading section-heading-light">
+          <p>读懂扫描结果</p>
+          <h2 id="safety-title">两个标签，代表两条完全不同的处理边界</h2>
+          <p class="section-intro">分类来自本机路径、产品记录、任务、服务、签名或文件证据。它不是只看名字的模糊匹配。</p>
+        </div>
+
+        <dl class="signal-list">
+          <div class="signal signal-confirmed">
+            <dt>Confirmed</dt>
+            <dd>检测证据满足项目规则。它仍然不会自动删除；你必须先看清精确目标并明确批准。</dd>
+          </div>
+          <div class="signal signal-review">
+            <dt>ReviewOnly</dt>
+            <dd>证据不足、目标含糊、属于驱动或来自离线 Windows。项目只报告，不会自动删除。</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+
+    <section class="section shell preserve-section" aria-labelledby="preserve-title">
+      <div class="section-heading">
+        <p>默认保留</p>
+        <h2 id="preserve-title">正常文件和个人资料不会因为一个名字就被处理</h2>
+      </div>
+      <div class="preserve-grid">
+        <div>
+          <h3>普通数字文件</h3>
+          <p>照片、游戏资源、模型、哈希值和其他只在名称中含有“360”的内容不构成产品证据。</p>
+        </div>
+        <div>
+          <h3>Windows 与驱动</h3>
+          <p>系统屏保、显卡和网卡驱动、驱动精灵及其他正常软件不会因为关键词被强删。</p>
+        </div>
+        <div>
+          <h3>浏览器个人资料</h3>
+          <p>书签、历史记录和会话默认保留。删除浏览器资料需要单独备份、扫描选项和明确批准。</p>
+        </div>
+        <div>
+          <h3>其他 Windows 安装</h3>
+          <p>另一块磁盘上的 Windows 只允许扫描和报告；本项目不提供跨系统删除模式。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section shell privacy-section" aria-labelledby="privacy-title">
+      <div class="privacy-rule" aria-hidden="true"></div>
+      <div>
+        <p class="section-label">隐私与报告</p>
+        <h2 id="privacy-title">结果留在本机；公开求助前先检查报告</h2>
+      </div>
+      <div class="privacy-copy">
+        <p>本介绍页没有分析、广告或跟踪脚本。项目的 Scan、Remove 和 Verify 在本机 PowerShell 中运行，并把结果写入本地 JSON 报告。</p>
+        <p>
+          报告中的电脑名和用户字段默认留空，但批准上下文、用户 SID 和发现路径仍可能暴露身份。
+          保留未经修改的本机 Scan 原件供 Remove 使用；公开求助时另做脱敏副本，不能用修改过的副本继续 Remove。
+        </p>
+      </div>
+    </section>
+
+    <section class="section shell" id="faq" aria-labelledby="faq-title">
+      <div class="section-heading">
+        <p>常见问题</p>
+        <h2 id="faq-title">开始前最值得确认的事</h2>
+      </div>
+      <div class="faq-list">
+        <article>
+          <h3>它是“一键清理软件”吗？</h3>
+          <p>不是。它是给 AI Agent 使用的技能包，也提供可双击的备用脚本。核心流程始终是先扫描、人工审阅，再决定是否删除。</p>
+        </article>
+        <article>
+          <h3>它能检查哪些软件或问题？</h3>
+          <p>
+            当前规则覆盖有证据支持的 360 安全卫士、360 浏览器卸载残留、360 画报/多绘屏保（Huabao/Duohui）和相关更新任务，
+            但不保证覆盖所有版本或变体。具体范围见 <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/detection-catalog.md">检测目录</a>。
+          </p>
+        </article>
+        <article>
+          <h3>Scan 会删除目标软件吗？</h3>
+          <p>不会。Scan 不要求管理员权限，也不会删除目标软件；它会在本机新建一份待审阅的 JSON 报告。</p>
+        </article>
+        <article>
+          <h3>看到 ReviewOnly 应该怎么办？</h3>
+          <p>不要手工强删。先保留目标，核对签名、版本和路径；仍无法判断时，提交带脱敏证据的 GitHub Issue。</p>
+        </article>
+        <article>
+          <h3>Remove 成功就代表彻底清理了吗？</h3>
+          <p>不一定。Remove 的动作报告和重启后的 Verify 是两个证据阶段。最终应查看 Verify 报告里是否仍有 Confirmed 项。</p>
+        </article>
+        <article>
+          <h3>必须使用 AI Agent 吗？</h3>
+          <p>不必须。可以下载 ZIP，按中文新手指南运行 Scan、审阅报告，再决定是否使用 Remove 和 Verify。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell open-source" aria-labelledby="open-source-title">
+      <div>
+        <p class="section-label">开源与联系</p>
+        <h2 id="open-source-title">检查源码，报告可复现的问题</h2>
+      </div>
+      <div class="open-source-copy">
+        <p>项目以 MIT 许可证开源。遇到无法判断的目标，请优先提交公开 Issue，并只附脱敏后的路径、版本和数字签名信息。</p>
+        <div class="text-links">
+          <a href="https://github.com/LongXL6/windows-360-cleaner">查看 GitHub 仓库</a>
+          <a href="https://github.com/LongXL6/windows-360-cleaner/issues">提交或查看 Issue</a>
+          <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/LICENSE">阅读 MIT 许可证</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-inner">
+      <p>Windows 360 Cleaner · 开源 AI Agent 技能包</p>
+      <p>扫描、批准、删除、验证是四个独立步骤。</p>
+    </div>
+  </footer>
+</body>
+</html>

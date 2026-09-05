@@ -21,16 +21,16 @@ Agent 必须展示实际命令结果或报告路径。只生成了一段 PowerSh
 
 1. 在 GitHub 页面点击 **Code → Download ZIP**，解压文件。
 2. 双击 `scripts\Scan-360.cmd`。Scan 是只读操作，不需要管理员权限。
-3. 找到脚本生成的 JSON 报告，检查后上传给 Agent。
+3. 按窗口的 `Report:` 路径找到 JSON 报告（默认桌面），保留本机原件；检查隐私后决定是否向 Agent 提供副本。
 4. 让 Agent 分开解释 `Confirmed`、`ReviewOnly` 和保留项。
 5. 只有确认无误后，才双击 `scripts\Remove-360.cmd`，阅读警告，把同一份已审阅的 Scan JSON 拖入窗口，再确认管理员授权。
-6. 重启 Windows，再双击 `scripts\Verify-360.cmd`，把 Verify 报告交给 Agent 汇总。
+6. 重启 Windows，再双击 `scripts\Verify-360.cmd`；向云端 Agent 提供报告前，同样先制作脱敏副本，原件留在本机。
 
-如果 Agent 无法读取 JSON，用户可以打开文件并分段粘贴，但不要删改字段名或只截取成功项目。
+完整的解压、报告位置和结果说明见 [新手指南](getting-started.md)。如果 Agent 无法读取 JSON，可以粘贴脱敏后的相关条目，并说明这是节选，不能代表完整结果。不要修改用于 Remove 的原始报告；分享副本不能替代原始批准清单。
 
 ## 上传报告前的隐私提醒
 
-本项目的报告默认不写电脑名和 Windows 用户名，但路径、已安装软件和任务名称仍可能透露个人使用习惯。上传前请自行检查；不要上传密码、浏览器资料、聊天记录或与问题无关的私人文件。
+本项目默认不填独立的 `ComputerName` 和 `User` 字段，但路径、用户 SID、批准上下文、已安装软件和任务名称仍可能透露身份与个人使用习惯；报告并非完全匿名。保留本机原始 Scan JSON，另做分享副本并遮盖用户名、私人路径、SID 和无关内容。上传前请自行检查；不要上传密码、浏览器资料、聊天记录或与问题无关的私人文件。
 
 豆包官方说明其对话支持上传文件，上传文件可能进入豆包云盘；是否用于模型改进可在相应隐私设置中管理。请在上传前阅读豆包当前的 [云盘使用须知](https://www.doubao.com/legal/ai_space) 和 [帮助模型改进效果 FAQ](https://www.doubao.com/legal/model_training_faq)。
 
@@ -39,8 +39,9 @@ Agent 必须展示实际命令结果或报告路径。只生成了一段 PowerSh
 ```text
 Treat https://github.com/LongXL6/windows-360-cleaner as an AI skill package. Read SKILL.md before doing anything.
 First state whether you can actually access this Windows PC's local PowerShell session. If you can, run Scan only, explain Confirmed, ReviewOnly, and preserved items, then stop for my explicit approval. Do not run Remove before that approval.
-If you cannot access the terminal, do not claim that you scanned or removed anything. Ask me to download the ZIP, run scripts\Scan-360.cmd, and upload the JSON report for interpretation. After I approve it, tell me to run scripts\Remove-360.cmd and drag that same reviewed Scan JSON into the window when prompted.
-After approved removal, run Verify and report every field required by SKILL.md, including zero values. Never broadly delete paths merely because their names contain 360.
+If you cannot access the terminal, do not claim local execution. Ask me to extract the full ZIP and run scripts\Scan-360.cmd. Keep the original report locally and share only a separate redacted copy or excerpt with a cloud agent. Explain that an excerpt cannot establish the complete result.
+Wait until I review the local original and explicitly approve. Then guide me to scripts\Remove-360.cmd and use that same unchanged original Scan JSON, never the redacted copy.
+After approved removal, run Verify. Redact a separate copy before cloud sharing. Report every available field required by SKILL.md, including zero values, and mark unavailable data as unknown. Never broadly delete paths merely because their names contain 360.
 ```
 
 ## Agent implementation notes
