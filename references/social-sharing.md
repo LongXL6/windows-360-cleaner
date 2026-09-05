@@ -14,11 +14,13 @@
 
 ## 统一链接
 
+- 项目网站：https://longxl6.github.io/windows-360-cleaner/
+- English website: https://longxl6.github.io/windows-360-cleaner/en/
 - 仓库：https://github.com/LongXL6/windows-360-cleaner
 - 中文新手指南：https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.md
 - English beginner guide: https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.en.md
 
-> 新手指南随同一个 PR 准备时，在合并前链接可能暂时返回 404。发布前必须用无登录窗口重新打开。当前没有启用项目网站，CTA 应直达 GitHub。
+> 项目网站与新手指南现已公开。初次介绍可使用网站作为易读入口，源码和 ZIP 下载继续使用 GitHub；下面的草稿保留仓库链接，发布时可按场景替换。每次发布前都用无登录窗口重新检查最终链接。
 
 ## 画面素材与通用编辑建议
 

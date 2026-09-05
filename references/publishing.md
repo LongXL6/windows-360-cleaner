@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [社交文案包](social-sharing.md)
 
-本仓库的公开入口目前是 GitHub。2026-09-05 检查时，Pages 尚未配置，About 的网站、topics 与自定义 Social preview 尚未设置。`docs/` 是准备供审阅后发布的静态网站源码；本 PR 不会开启发布或向搜索引擎提交内容。
+项目网站已于 2026-09-05 通过 GitHub Pages 发布：[中文](https://longxl6.github.io/windows-360-cleaner/) · [English](https://longxl6.github.io/windows-360-cleaner/en/)。发布源为 `main` 的 `/docs`，HTTPS 已开启，仓库 About 的网站、description 和 topics 已设置。当前状态应以 Pages 设置、部署运行和公开页面为准；上线不等于 Google 已收录。
 
 ## 修改什么文件
 
@@ -32,13 +32,13 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory .
 - 用 `git diff --check` 检查补丁，并确认现有 Validate CI 通过。
 - 网页只介绍工具；ZIP 按钮下载仓库，不会在网页里扫描电脑。
 
-## 审阅、合并后手动开启 GitHub Pages
+## 发布配置与后续更新
 
-当前预设正式地址是 `https://longxl6.github.io/windows-360-cleaner/`，英文页为 `https://longxl6.github.io/windows-360-cleaner/en/`。
+当前正式地址是 `https://longxl6.github.io/windows-360-cleaner/`，英文页为 `https://longxl6.github.io/windows-360-cleaner/en/`。发布源已经配置，之后合并到 main 的页面变更会触发部署。需要恢复配置或在另一个仓库搭建时，可参考以下步骤：
 
 1. 合并 PR，确认 main 包含 `docs/index.html` 和英文页。
 2. 进入仓库 **Settings → Pages → Build and deployment**。
-3. Source 选择 **Deploy from a branch**，Branch 选择 **main**，目录选择 **/docs**，保存。这一步会启动发布；本次 PR 没有替你执行。
+3. Source 选择 **Deploy from a branch**，Branch 选择 **main**，目录选择 **/docs**，保存。这一步会启动发布，不需要在每次更新时重复执行。
 4. 等待 Pages 的构建和部署成功，读取 Settings 显示的实际网址。
 5. 核对中文页、英文页、CSS、sitemap 和分享图能公开访问且返回成功响应。用手机实际点击下载与求助链接。
 
@@ -66,15 +66,15 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory .
 3. 在 Sitemaps 提交正式地址 `https://longxl6.github.io/windows-360-cleaner/sitemap.xml`；如果换了域名，使用更新后的实际地址。
 4. 必要时请求索引，并在之后查看控制台的页面索引与搜索表现。抓取、建立索引和获得搜索展示是不同阶段，提交 sitemap 不保证收录或排名。参考 [Google 请求重新抓取说明](https://developers.google.com/search/docs/crawling-indexing/ask-google-to-recrawl)。
 
-README 或页面正文不应写“Google 已收录”，除非已经有对应实时证据。本 PR 未执行或证明 Search Console 验证/提交；实际状态需要登录 Search Console 核验。
+首页已配置 Search Console 提供的公开 `google-site-verification` 元标记，请在后续编辑时保留。元标记存在本身不代表验证完成；验证、sitemap 提交和索引情况应以对应站点在 Search Console 中的实时状态为准。README 或页面正文不应写“Google 已收录”，除非已经有对应证据。
 
 ## 仓库 About 与分享预览，手动补充
 
-建议在审阅后按实际内容修改：
+网站、description 和 topics 已设置。后续修改时保持与实际内容一致；自定义 Social preview 可另外配置：
 
 - **Description**：`Windows 360/Qihoo 扫描与清理 Skill：先扫描、人工批准、重启验证。支持 Codex 与手动脚本。`
 - **Topics**：`windows`、`powershell`、`agent-skills`、`codex`、`qihoo-360`、`uninstaller`。只选实际相关的标签。
-- **Website**：等 Pages 正式可访问后，填写 Settings 返回的实际 URL，并在 README 加“项目网站”链接。
+- **Website**：填写 Settings 返回的实际 URL，并同步 README 的“项目网站”链接；目前已设置为上述正式地址。
 - **Social preview**：在仓库 Settings → General → Social preview 上传检查过的 PNG/JPG/GIF。现有 `assets/readme/windows-360-cleaner-hero.jpg` 可作为素材；先检查小尺寸裁切是否仍能读清项目名，再考虑另做 1280×640 版本。
 
 GitHub 仓库预览和自有网页的 Open Graph 是两个独立设置；改 HTML 不会设置 GitHub 仓库预览。尺寸/格式以 [GitHub 分享预览官方说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/customizing-your-repositorys-social-media-preview) 为准。
