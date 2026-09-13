@@ -3,6 +3,8 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $scriptPath = Join-Path $PSScriptRoot 'Invoke-360Cleanup.ps1'
+$selectorPath = Join-Path $PSScriptRoot 'Select-360Cleanup.ps1'
+$scanCmd = Join-Path $PSScriptRoot 'Scan-360.cmd'
 $removeCmd = Join-Path $PSScriptRoot 'Remove-360.cmd'
 
 function Assert-True {
@@ -62,15 +64,19 @@ function Invoke-CleanupScriptProcess {
 
 $tokens = $null
 $parseErrors = $null
-foreach ($sourcePath in @($scriptPath, $PSCommandPath)) {
+foreach ($sourcePath in @($scriptPath, $selectorPath, $PSCommandPath)) {
     $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
     Assert-True ($sourceBytes.Length -ge 3 -and $sourceBytes[0] -eq 0xEF -and $sourceBytes[1] -eq 0xBB -and $sourceBytes[2] -eq 0xBF) `
         "PowerShell 5.1 compatibility requires a UTF-8 BOM: $sourcePath"
 }
-[void][System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$parseErrors)
-if ($parseErrors.Count -gt 0) {
-    $parseErrors | ForEach-Object { Write-Error $_.Message }
-    throw 'PowerShell parser validation failed.'
+foreach ($sourcePath in @($scriptPath, $selectorPath)) {
+    $tokens = $null
+    $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) {
+        $parseErrors | ForEach-Object { Write-Error $_.Message }
+        throw "PowerShell parser validation failed: $sourcePath"
+    }
 }
 
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('windows-360-cleaner-safety-{0}' -f [Guid]::NewGuid().ToString('N'))
@@ -89,10 +95,38 @@ try {
     Assert-True ($json.PSObject.Properties.Name -contains 'Summary') 'Report schema must expose a Summary field.'
     Assert-True ($null -eq $json.Summary) 'A read-only scan must not claim that content was removed.'
     Assert-True ($null -eq $json.ComputerName -and $null -eq $json.User) 'Reports must omit local identity by default.'
+    foreach ($finding in @($json.Findings)) {
+        Assert-True ($finding.PSObject.Properties.Name -contains 'SelectionId') `
+            'Every reported finding must expose an explicit SelectionId field.'
+        if ($finding.Confidence -eq 'Confirmed' -and -not [bool]$finding.Offline -and $finding.RemovalType -ne 'None') {
+            Assert-True ([string]$finding.SelectionId -match '^[0-9A-F]{64}$') `
+                'A selectable scan finding did not receive a stable SHA-256 SelectionId.'
+        }
+        else {
+            Assert-True ([string]::IsNullOrEmpty([string]$finding.SelectionId)) `
+                'A review-only, offline, or non-removable finding received a selectable ID.'
+        }
+    }
 
     $env:WINDOWS_360_CLEANER_TEST_MODE = 'ISOLATED-SAFETY-TEST'
     try { . $scriptPath -InternalTestLibraryOnly }
     finally { Remove-Item Env:\WINDOWS_360_CLEANER_TEST_MODE -ErrorAction SilentlyContinue }
+
+    $env:WINDOWS_360_CLEANER_TEST_MODE = 'ISOLATED-SAFETY-TEST'
+    try { . $selectorPath -InternalTestLibraryOnly }
+    finally { Remove-Item Env:\WINDOWS_360_CLEANER_TEST_MODE -ErrorAction SilentlyContinue }
+    $selectorConfirmed = [pscustomobject]@{
+        Confidence = 'Confirmed'; Offline = $false; RemovalType = 'Path'; SelectionId = ('A1' * 32)
+    }
+    $selectorReviewOnly = [pscustomobject]@{
+        Confidence = 'ReviewOnly'; Offline = $false; RemovalType = 'None'; SelectionId = ''
+    }
+    Assert-True (Test-FindingSelectable $selectorConfirmed) 'The selector disabled a valid Confirmed removal target.'
+    Assert-True (-not (Test-FindingSelectable $selectorReviewOnly)) 'The selector enabled a ReviewOnly target.'
+    $scanLauncherText = Get-Content -LiteralPath $scanCmd -Raw
+    Assert-True ($scanLauncherText.Contains('Select-360Cleanup.ps1') -and
+        -not $scanLauncherText.Contains('Invoke-360Cleanup.ps1')) `
+        'The beginner Scan launcher must open the post-scan selector rather than bypass it.'
     $originalKnownFolders = $script:KnownFolders
     $script:KnownFolders = [ordered]@{
         LocalAppData = Join-Path $fixtureRoot 'LocalAppData'
@@ -179,6 +213,30 @@ try {
     Assert-True ($repeatActions.Count -eq 0) 'Repeated cleanup of an absent target should be a no-op.'
     Assert-True ($repeatSummary.PathAccountingComplete -and $repeatSummary.TotalItemsRemoved -eq 0 -and $repeatSummary.LogicalBytesRemoved -eq 0) `
         'Repeated cleanup must report an accurate zero total.'
+
+    $selectedTarget = Join-Path $script:KnownFolders.Temp 'duohuipingbao'
+    $preservedTarget = Join-Path $script:KnownFolders.Temp 'huabao_tmp'
+    New-Item -ItemType Directory -Path $selectedTarget | Out-Null
+    New-Item -ItemType Directory -Path $preservedTarget | Out-Null
+    Set-Content -LiteralPath (Join-Path $selectedTarget 'remove.txt') -Value 'REMOVE-SELECTED'
+    $preservedFile = Join-Path $preservedTarget 'keep.txt'
+    Set-Content -LiteralPath $preservedFile -Value 'KEEP-UNSELECTED'
+    $preservedHash = (Get-FileHash -LiteralPath $preservedFile -Algorithm SHA256).Hash
+    $selectedFinding = New-TestFinding $selectedTarget
+    $preservedFinding = New-TestFinding $preservedTarget
+    $fixtureSid = 'S-1-5-21-111111111-222222222-333333333-1001'
+    $selectedId = Get-FindingSelectionId -Finding $selectedFinding -UserSid $fixtureSid
+    $resolvedSelection = Resolve-CleanupSelection -Approved @($selectedFinding, $preservedFinding) `
+        -Eligible @($selectedFinding, $preservedFinding) -SelectedIds @($selectedId) `
+        -UserSid $fixtureSid -SelectionApplied $true
+    $selectionActions = @(Remove-ConfirmedFindings -Findings @($resolvedSelection.Eligible))
+    Assert-True (-not (Test-Path -LiteralPath $selectedTarget)) 'The explicitly selected fixture was not removed.'
+    Assert-True (Test-Path -LiteralPath $preservedTarget) 'An unselected confirmed fixture was removed.'
+    Assert-True ((Get-FileHash -LiteralPath $preservedFile -Algorithm SHA256).Hash -eq $preservedHash) `
+        'Content under an unselected confirmed fixture changed.'
+    Assert-True (@($selectionActions | Where-Object { $_.Target -eq $preservedTarget }).Count -eq 0) `
+        'An action was emitted for an unselected confirmed fixture.'
+    Remove-Item -LiteralPath $preservedTarget -Recurse -Force
 
     $lockedTarget = Join-Path $script:KnownFolders.Temp 'huabao_tmp'
     New-Item -ItemType Directory -Path $lockedTarget | Out-Null

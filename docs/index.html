@@ -133,21 +133,21 @@
           <span class="step-number" aria-hidden="true">2</span>
           <div>
             <h3>先运行 Scan</h3>
-            <p>双击 <code>scripts\Scan-360.cmd</code>。Scan 是只读审计，不需要管理员权限，也不会删除文件。</p>
+            <p>双击 <code>scripts\Scan-360.cmd</code>。只读扫描后会弹出选择窗口，默认一个都不选。</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">3</span>
           <div>
-            <h3>审阅 JSON 报告</h3>
-            <p>逐项查看路径、证据和分类。不要把文件名里出现“360”当作可删除依据。</p>
+            <h3>逐项审阅并勾选</h3>
+            <p>只有绿色 Confirmed 可选，黄色 ReviewOnly 只能查看；未勾选目标会保留。</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">4</span>
           <div>
-            <h3>明确批准后再 Remove，重启后 Verify</h3>
-            <p>Remove 只处理已批准且仍被确认的目标。删除是永久操作；完成后建议重启 Windows，再运行 Verify 检查是否仍有 Confirmed 项。</p>
+            <h3>再次确认后删除，重启后 Verify</h3>
+            <p>点击“删除所选项目”后还会再次确认和请求 UAC。删除是永久操作；完成后重启 Windows，再运行 Verify。</p>
           </div>
         </li>
       </ol>
