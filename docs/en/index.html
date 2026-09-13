@@ -134,21 +134,21 @@
           <span class="step-number" aria-hidden="true">2</span>
           <div>
             <h3>Run Scan first</h3>
-            <p>Double-click <code>scripts\Scan-360.cmd</code>. Scan is read-only, does not require administrator access, and does not delete files.</p>
+            <p>Double-click <code>scripts\Scan-360.cmd</code>. A read-only scan opens a selector with nothing checked by default.</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">3</span>
           <div>
-            <h3>Review the JSON report</h3>
-            <p>Inspect each path, evidence note, and classification. A filename containing “360” is not removal evidence by itself.</p>
+            <h3>Review and select item by item</h3>
+            <p>Only green Confirmed rows are selectable. Yellow ReviewOnly rows are view-only, and unchecked targets stay preserved.</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">4</span>
           <div>
-            <h3>Approve before Remove; restart before Verify</h3>
-            <p>Remove handles only approved targets that are still confirmed. Removal is permanent. Restart Windows afterward, then run Verify to check for remaining Confirmed findings.</p>
+            <h3>Confirm again, then restart and Verify</h3>
+            <p>Remove selected shows a second warning and requests UAC. Removal is permanent. Restart Windows afterward, then run Verify.</p>
           </div>
         </li>
       </ol>

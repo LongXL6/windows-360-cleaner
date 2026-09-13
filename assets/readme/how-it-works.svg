@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1440" height="720" viewBox="0 0 1440 720" role="img" aria-labelledby="title desc">
   <title id="title">Windows 360 Cleaner Skill 四步安全清理流程</title>
-  <desc id="desc">把仓库链接交给 Agent，先扫描，再人工确认，最后删除并验证。证据不足的项目不会强制删除。</desc>
+  <desc id="desc">把仓库链接交给 Agent，先扫描，再在默认全不选的窗口逐项勾选，最后删除并验证。证据不足和未勾选项目不会删除。</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#071426"/>
@@ -61,9 +61,9 @@
     <rect x="840" y="217" width="50" height="50" rx="9" fill="none" stroke="#fff" stroke-width="6"/>
     <path d="M850 242 L861 253 L881 231" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
     <text x="865" y="325" text-anchor="middle" fill="#67e8f9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" font-weight="700">03 · 人工确认</text>
-    <text x="865" y="372" text-anchor="middle" fill="#f8fafc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25" font-weight="700">你来决定是否删除</text>
-    <text x="865" y="420" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">先看目标、理由和风险</text>
-    <text x="865" y="452" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">明确批准后才允许 Remove</text>
+    <text x="865" y="372" text-anchor="middle" fill="#f8fafc" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25" font-weight="700">你来逐项勾选</text>
+    <text x="865" y="420" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">只有绿色 Confirmed 可选</text>
+    <text x="865" y="452" text-anchor="middle" fill="#afc3d8" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18">默认全不选，未勾选会保留</text>
     <rect x="764" y="490" width="202" height="38" rx="19" fill="#3b2b16"/>
     <text x="865" y="515" text-anchor="middle" fill="#fbbf24" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16">浏览器资料需单独批准</text>
   </g>

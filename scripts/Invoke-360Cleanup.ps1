@@ -28,6 +28,8 @@ param(
 
     [string]$OutcomeRunId,
 
+    [string]$SelectedFindingIds,
+
     [switch]$InternalElevatedChild,
 
     [switch]$InternalTestLibraryOnly
@@ -856,6 +858,144 @@ function Compare-ApprovedCleanupFindings {
     }
 }
 
+function ConvertFrom-CleanupSelectionIds {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw 'SelectedFindingIds must contain at least one SHA-256 selection ID.'
+    }
+    $ids = @($Value.Split(';') | ForEach-Object { $_.Trim().ToUpperInvariant() })
+    if ($ids.Count -gt 64) {
+        throw 'SelectedFindingIds exceeds the 64-item interactive safety limit. Split the work into fresh scan-and-review runs.'
+    }
+    foreach ($id in $ids) {
+        if ($id -notmatch '^[0-9A-F]{64}$') {
+            throw 'SelectedFindingIds must be a semicolon-separated list of SHA-256 selection IDs.'
+        }
+    }
+    if (@($ids | Sort-Object -Unique).Count -ne $ids.Count) {
+        throw 'SelectedFindingIds contains a duplicate selection ID.'
+    }
+    return @($ids)
+}
+
+function Get-FindingSelectionId {
+    param(
+        [object]$Finding,
+        [string]$UserSid
+    )
+
+    if ($null -eq $Finding -or $Finding.Confidence -ne 'Confirmed' -or [bool]$Finding.Offline -or
+        [string]$Finding.RemovalType -eq 'None') {
+        return ''
+    }
+    return Get-360CleanupTextSha256 (Get-FindingApprovalKey -Finding $Finding -UserSid $UserSid)
+}
+
+function Add-CleanupSelectionIds {
+    param(
+        [object[]]$Findings,
+        [string]$UserSid
+    )
+
+    foreach ($finding in @($Findings)) {
+        $selectionId = Get-FindingSelectionId -Finding $finding -UserSid $UserSid
+        $finding | Add-Member -NotePropertyName SelectionId -NotePropertyValue $selectionId -Force
+    }
+    return @($Findings)
+}
+
+function Assert-ApprovedSelectionIds {
+    param(
+        [object[]]$Approved,
+        [string[]]$SelectedIds,
+        [string]$UserSid
+    )
+
+    $approvedIds = @{}
+    foreach ($finding in @($Approved)) {
+        $id = Get-FindingSelectionId -Finding $finding -UserSid $UserSid
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+        if (-not $approvedIds.ContainsKey($id)) { $approvedIds[$id] = $finding }
+    }
+    foreach ($id in @($SelectedIds)) {
+        if (-not $approvedIds.ContainsKey($id)) {
+            throw "A selected item is not an approved removable finding in the bound Scan report: $id"
+        }
+    }
+}
+
+function Resolve-CleanupSelection {
+    param(
+        [object[]]$Approved,
+        [object[]]$Eligible,
+        [object[]]$Current = @(),
+        [string[]]$SelectedIds,
+        [string]$UserSid,
+        [bool]$SelectionApplied
+    )
+
+    if (-not $SelectionApplied) {
+        return [pscustomobject]@{
+            Eligible         = @($Eligible)
+            Unselected       = @()
+            UnselectedCurrent = @()
+        }
+    }
+
+    Assert-ApprovedSelectionIds -Approved $Approved -SelectedIds $SelectedIds -UserSid $UserSid
+    $selectedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($id in @($SelectedIds)) { [void]$selectedSet.Add($id) }
+
+    $selected = New-Object System.Collections.ArrayList
+    $unselected = New-Object System.Collections.ArrayList
+    $matchedIds = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($finding in @($Eligible)) {
+        $id = Get-FindingSelectionId -Finding $finding -UserSid $UserSid
+        if ($selectedSet.Contains($id)) {
+            [void]$selected.Add($finding)
+            [void]$matchedIds.Add($id)
+        }
+        else { [void]$unselected.Add($finding) }
+    }
+    foreach ($id in @($SelectedIds)) {
+        if (-not $matchedIds.Contains($id)) {
+            throw "A selected finding is missing, changed, or no longer Confirmed: $id. No changes were made. Run Scan again."
+        }
+    }
+
+    $selectedPaths = @($selected | Where-Object { $_.RemovalType -eq 'Path' })
+    $currentScope = if (@($Current).Count -gt 0) { @($Current) } else { @($Eligible) }
+    $unselectedCurrent = @($currentScope | Where-Object {
+        $_.Confidence -eq 'Confirmed' -and -not [bool]$_.Offline -and $_.RemovalType -ne 'None' -and
+            -not $selectedSet.Contains((Get-FindingSelectionId -Finding $_ -UserSid $UserSid))
+    })
+    foreach ($selectedPath in $selectedPaths) {
+        foreach ($currentFinding in $currentScope) {
+            $currentId = Get-FindingSelectionId -Finding $currentFinding -UserSid $UserSid
+            if (-not [string]::IsNullOrWhiteSpace($currentId) -and $selectedSet.Contains($currentId)) { continue }
+            $containedTarget = switch ([string]$currentFinding.Kind) {
+                'Path' { [string]$currentFinding.Target; break }
+                'OfflinePath' { [string]$currentFinding.Target; break }
+                'Process' { [string]$currentFinding.ValueName; break }
+                'VendorUninstaller' { [string]$currentFinding.Target; break }
+                default { '' }
+            }
+            if (-not [string]::IsNullOrWhiteSpace($containedTarget) -and
+                (Test-IsUnderPath -Candidate $containedTarget -Root ([string]$selectedPath.Target))) {
+                throw ("The selected path contains a current unselected or review-only target: {0}. " +
+                    'Select every selectable contained target or keep the parent path unselected. No changes were made.' -f $containedTarget)
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Eligible          = @($selected)
+        Unselected        = @($unselected)
+        UnselectedCurrent = @($unselectedCurrent)
+    }
+}
+
 function ConvertTo-CleanupQuotedArgument {
     param([string]$Value)
 
@@ -869,6 +1009,8 @@ function New-ElevatedCleanupArgumentLine {
         [string]$ApprovedReport,
         [string]$ApprovedReportHash,
         [string]$OutcomeRunId,
+        [string]$SelectedFindingIds,
+        [bool]$SelectionApplied = $false,
         [string]$ReportPath,
         [bool]$IncludeBrowserProfiles = $false,
         [bool]$AllowExplorerRestart = $false,
@@ -882,6 +1024,9 @@ function New-ElevatedCleanupArgumentLine {
     if ($OutcomeRunId -notmatch '^[0-9a-fA-F]{32}$') {
         throw 'OutcomeRunId must be a 32-character run identifier.'
     }
+    if ($SelectionApplied) {
+        [void](ConvertFrom-CleanupSelectionIds -Value $SelectedFindingIds)
+    }
     $argumentParts = @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (ConvertTo-CleanupQuotedArgument $ScriptPath),
         '-Mode', 'Remove', '-ConfirmRemoval', '-ConfirmationPhrase', 'REMOVE-CONFIRMED-360',
@@ -893,6 +1038,9 @@ function New-ElevatedCleanupArgumentLine {
     )
     if ($IncludeBrowserProfiles) {
         $argumentParts += @('-IncludeBrowserProfiles', '-BrowserProfileConfirmation', 'DELETE-360-BROWSER-DATA')
+    }
+    if ($SelectionApplied) {
+        $argumentParts += @('-SelectedFindingIds', (ConvertTo-CleanupQuotedArgument $SelectedFindingIds))
     }
     if ($AllowExplorerRestart) { $argumentParts += '-AllowExplorerRestart' }
     if ($ForceLockedTargets) { $argumentParts += '-ForceLockedTargets' }
@@ -3794,6 +3942,14 @@ function Show-RemovalSummary {
     $qualifier = $(if ($Summary.PathAccountingComplete) { '' } else { 'At least ' })
     Write-Host ''
     Write-Host 'Removal summary:' -ForegroundColor Cyan
+    $summaryPropertyNames = @($Summary.PSObject.Properties.Name)
+    if ($Summary -is [System.Collections.IDictionary]) {
+        $summaryPropertyNames = @($Summary.Keys | ForEach-Object { [string]$_ })
+    }
+    if ($summaryPropertyNames -contains 'SelectionApplied' -and [bool]$Summary.SelectionApplied) {
+        Write-Host ("Selected confirmed findings: {0}; unselected confirmed findings preserved: {1}; selected findings still present: {2}" -f `
+            $Summary.SelectedConfirmedFindings, $Summary.UnselectedConfirmedFindings, $Summary.ImmediateRemainingSelected)
+    }
     Write-Host ("{0}total removed items: {1}" -f $qualifier, $Summary.TotalItemsRemoved)
     Write-Host ("Files removed: {0}; directories removed: {1}" -f $Summary.FilesRemoved, $Summary.DirectoriesRemoved)
     Write-Host ("Logical file content removed: {0} ({1} bytes); actual free-disk change can differ" -f `
@@ -3922,6 +4078,8 @@ function Invoke-ElevatedCleanup {
         [string]$ApprovedReport,
         [string]$ApprovedReportHash,
         [string]$OutcomeRunId,
+        [string]$SelectedFindingIds,
+        [bool]$SelectionApplied = $false,
         [string]$ReportPath,
         [bool]$IncludeBrowserProfiles = $false,
         [bool]$AllowExplorerRestart = $false,
@@ -3931,7 +4089,8 @@ function Invoke-ElevatedCleanup {
 
     $argumentLine = New-ElevatedCleanupArgumentLine -ScriptPath $ScriptPath `
         -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
-        -OutcomeRunId $OutcomeRunId -ReportPath $ReportPath `
+        -OutcomeRunId $OutcomeRunId -SelectedFindingIds $SelectedFindingIds `
+        -SelectionApplied:$SelectionApplied -ReportPath $ReportPath `
         -IncludeBrowserProfiles:$IncludeBrowserProfiles -AllowExplorerRestart:$AllowExplorerRestart `
         -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport
     try {
@@ -3975,6 +4134,8 @@ function Invoke-360CleanupRemoveElevationBoundary {
         [string]$ApprovedReport,
         [string]$ApprovedReportHash,
         [string]$OutcomeRunId,
+        [string]$SelectedFindingIds,
+        [bool]$SelectionApplied = $false,
         [string]$ReportPath,
         [bool]$InternalElevatedChild = $false,
         [bool]$IncludeBrowserProfiles = $false,
@@ -3993,7 +4154,8 @@ function Invoke-360CleanupRemoveElevationBoundary {
 
     $elevatedExitCode = Invoke-ElevatedCleanup -ScriptPath $ScriptPath `
         -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
-        -OutcomeRunId $OutcomeRunId -ReportPath $ReportPath `
+        -OutcomeRunId $OutcomeRunId -SelectedFindingIds $SelectedFindingIds `
+        -SelectionApplied:$SelectionApplied -ReportPath $ReportPath `
         -IncludeBrowserProfiles:$IncludeBrowserProfiles -AllowExplorerRestart:$AllowExplorerRestart `
         -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport
     return [pscustomobject]@{ Handled = $true; ExitCode = [int]$elevatedExitCode }
@@ -4010,12 +4172,22 @@ if ($InternalElevatedChild -and $Mode -ne 'Remove') {
     throw 'InternalElevatedChild is valid only for Remove mode.'
 }
 
+$selectionApplied = $PSBoundParameters.ContainsKey('SelectedFindingIds')
+$selectedFindingIdList = @()
+if ($selectionApplied -and $Mode -ne 'Remove') {
+    throw 'SelectedFindingIds is valid only for Remove mode.'
+}
+
 if ($OfflineWindowsRoot -and $Mode -eq 'Remove') {
     throw 'OfflineWindowsRoot is scan-only. Remove from an offline Windows installation requires a separate, explicit workflow.'
 }
 
 $approvedInput = $null
 if ($Mode -eq 'Remove') {
+    if ($selectionApplied) {
+        $selectedFindingIdList = @(ConvertFrom-CleanupSelectionIds -Value $SelectedFindingIds)
+        $SelectedFindingIds = $selectedFindingIdList -join ';'
+    }
     if ([string]::IsNullOrWhiteSpace($ApprovedReport)) {
         throw 'Removal requires -ApprovedReport pointing to the reviewed SchemaVersion 2 Scan report.'
     }
@@ -4047,6 +4219,10 @@ if ($Mode -eq 'Remove') {
         Assert-CleanupApprovalContextMatchesCaller -ApprovalContext $approvedInput.Report.ApprovalContext
     }
     Set-CleanupSourceContext -ApprovalContext $approvedInput.Report.ApprovalContext
+    if ($selectionApplied) {
+        Assert-ApprovedSelectionIds -Approved @($approvedInput.Report.Findings) `
+            -SelectedIds $selectedFindingIdList -UserSid ([string]$approvedInput.Report.ApprovalContext.UserSid)
+    }
 
     $approvedBrowserProfiles = [bool]$approvedInput.Report.ApprovalContext.Options.IncludeBrowserProfiles
     if ($IncludeBrowserProfiles -and -not $approvedBrowserProfiles) {
@@ -4064,7 +4240,8 @@ $ReportPath = Assert-SafeReportPath $ReportPath
 if ($Mode -eq 'Remove') {
     $elevationBoundary = Invoke-360CleanupRemoveElevationBoundary -ScriptPath $PSCommandPath `
         -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
-        -OutcomeRunId $OutcomeRunId -ReportPath $ReportPath `
+        -OutcomeRunId $OutcomeRunId -SelectedFindingIds $SelectedFindingIds `
+        -SelectionApplied:$selectionApplied -ReportPath $ReportPath `
         -InternalElevatedChild:$InternalElevatedChild -IncludeBrowserProfiles:$IncludeBrowserProfiles `
         -AllowExplorerRestart:$AllowExplorerRestart -ForceLockedTargets:$ForceLockedTargets `
         -IncludeIdentityInReport:$IncludeIdentityInReport
@@ -4075,6 +4252,13 @@ if ($Mode -eq 'Remove') {
 
 Write-Host "Windows 360 Cleaner - $Mode" -ForegroundColor Cyan
 $initialFindings = @(Get-360Findings -OfflineRoot $OfflineWindowsRoot -IncludeProfiles:$IncludeBrowserProfiles)
+$selectionSid = if ($Mode -eq 'Remove') {
+    [string]$approvedInput.Report.ApprovalContext.UserSid
+}
+else {
+    [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+$initialFindings = @(Add-CleanupSelectionIds -Findings $initialFindings -UserSid $selectionSid)
 Show-Findings $initialFindings
 
 if ($Mode -eq 'Scan') {
@@ -4098,18 +4282,32 @@ if ($Mode -eq 'Verify') {
 
 $approvalComparison = Compare-ApprovedCleanupFindings -Approved @($approvedInput.Report.Findings) `
     -Current $initialFindings -SID ([string]$approvedInput.Report.ApprovalContext.UserSid)
+$resolvedSelection = Resolve-CleanupSelection -Approved @($approvedInput.Report.Findings) `
+    -Eligible @($approvalComparison.Eligible) -Current $initialFindings -SelectedIds $selectedFindingIdList `
+    -UserSid ([string]$approvedInput.Report.ApprovalContext.UserSid) -SelectionApplied:$selectionApplied
 $removalSummary = [ordered]@{}
-$actions = @(Remove-ConfirmedFindings -Findings @($approvalComparison.Eligible) -AllowExplorerRestart:$AllowExplorerRestart `
+$actions = @(Remove-ConfirmedFindings -Findings @($resolvedSelection.Eligible) -AllowExplorerRestart:$AllowExplorerRestart `
     -ForceLockedTargets:$ForceLockedTargets -Summary $removalSummary)
 $remainingFindings = @()
 $remainingConfirmed = $null
+$remainingSelected = $null
 if ([bool]$removalSummary.PostVendorMutationBlocked) {
     $remainingFindings = @($initialFindings)
     $removalSummary['ImmediateRescanComplete'] = $false
 }
 else {
     $remainingFindings = @(Get-360Findings -IncludeProfiles:$IncludeBrowserProfiles)
+    $remainingFindings = @(Add-CleanupSelectionIds -Findings $remainingFindings -UserSid $selectionSid)
     $remainingConfirmed = @($remainingFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
+    if ($selectionApplied) {
+        $selectedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($id in $selectedFindingIdList) { [void]$selectedSet.Add($id) }
+        $remainingSelected = @($remainingFindings | Where-Object {
+            $_.Confidence -eq 'Confirmed' -and -not $_.Offline -and
+                $selectedSet.Contains([string]$_.SelectionId)
+        }).Count
+    }
+    else { $remainingSelected = $remainingConfirmed }
     $removalSummary['ImmediateRescanComplete'] = $true
 }
 $removalSummary['ApprovedConfirmed'] = [int]$approvalComparison.ApprovedCount
@@ -4117,8 +4315,13 @@ $removalSummary['EligibleApproved'] = @($approvalComparison.Eligible).Count
 $removalSummary['NewSinceApproval'] = @($approvalComparison.NewSinceApproval).Count
 $removalSummary['MissingSinceApproval'] = @($approvalComparison.MissingSinceApproval).Count
 $removalSummary['NoLongerConfirmed'] = @($approvalComparison.NoLongerConfirmed).Count
+$removalSummary['SelectionApplied'] = [bool]$selectionApplied
+$removalSummary['SelectedConfirmedFindings'] = @($resolvedSelection.Eligible).Count
+$removalSummary['UnselectedConfirmedFindings'] = @($resolvedSelection.UnselectedCurrent).Count
 $removalSummary['ImmediateRemainingConfirmed'] = $remainingConfirmed
 $removalSummary['NoImmediateConfirmedFindings'] = ($null -ne $remainingConfirmed -and $remainingConfirmed -eq 0)
+$removalSummary['ImmediateRemainingSelected'] = $remainingSelected
+$removalSummary['NoImmediateSelectedFindings'] = ($null -ne $remainingSelected -and $remainingSelected -eq 0)
 Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $remainingFindings -Actions $actions `
     -Summary $removalSummary -ApprovalContext $approvedInput.Report.ApprovalContext `
     -ApprovedReportHash $ApprovedReportHash -OutcomeRunId $OutcomeRunId `
@@ -4139,18 +4342,24 @@ else {
 Show-Findings $remainingFindings
 Write-Host "Report: $ReportPath" -ForegroundColor Cyan
 
-if (Test-RemovalOutcomeRequiresAttention -Summary $removalSummary -RemainingConfirmed $remainingConfirmed) {
+if (Test-RemovalOutcomeRequiresAttention -Summary $removalSummary -RemainingConfirmed $remainingSelected) {
     $remainingConfirmedText = if ([bool]$removalSummary.ImmediateRescanComplete) {
-        [string]$remainingConfirmed
+        [string]$remainingSelected
     }
     else { 'unknown (immediate rescan blocked)' }
-    $attentionMessage = ("Cleanup requires attention: {0} confirmed finding(s) remain, {1} path target(s) are unresolved, " +
-        "{2} ACL repair(s) failed, and path accounting complete is {3}. Reboot and run Verify; do not broaden deletion without review.") -f `
-        $remainingConfirmedText, $removalSummary.UnresolvedPathTargets, $removalSummary.AclRepairFailures,
+    $remainingLabel = if ($selectionApplied) { 'selected confirmed finding(s)' } else { 'confirmed finding(s)' }
+    $attentionMessage = ("Cleanup requires attention: {0} {1} remain, {2} path target(s) are unresolved, " +
+        "{3} ACL repair(s) failed, and path accounting complete is {4}. Reboot and run Verify; do not broaden deletion without review.") -f `
+        $remainingConfirmedText, $remainingLabel, $removalSummary.UnresolvedPathTargets, $removalSummary.AclRepairFailures,
         $removalSummary.PathAccountingComplete
     Write-Warning $attentionMessage
     exit 2
 }
 
-Write-Host 'Approved targets that were still confirmed were processed. Restart Windows once, then run Verify.' -ForegroundColor Green
+if ($selectionApplied) {
+    Write-Host 'Selected approved targets that were still confirmed were processed. Unselected targets were preserved.' -ForegroundColor Green
+}
+else {
+    Write-Host 'Approved targets that were still confirmed were processed. Restart Windows once, then run Verify.' -ForegroundColor Green
+}
 exit 0

@@ -24,13 +24,14 @@
 > [!IMPORTANT]
 > This open-source **AI agent skill package** includes Windows PowerShell scripts. Use an agent for guidance or double-click a script yourself. It supports Windows 10/11 and PowerShell 5.1+; no paid service is required.
 
-## First time? Start with a scan report
+## Fastest beginner route: scan, then check boxes
 
 1. [Download the repository ZIP](https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip), choose **Extract All**, and open the extracted folder.
-2. Open `scripts` and double-click **`Scan-360.cmd`**. It does not remove software or require administrator access; it writes a JSON report when finished.
-3. Find the file shown beside **`Report:`** in the window (on the Desktop by default). Read the results before deciding whether to continue.
+2. Open `scripts` and double-click **`Scan-360.cmd`**. A read-only scan runs, then an item-selection window opens with nothing selected by default.
+3. Check only the green `Confirmed` targets you want removed. Yellow `ReviewOnly`, offline-system, and protected-data rows are disabled. Choose **Keep report only** to stop safely.
+4. **Remove selected** shows a second confirmation and then Windows UAC. Unchecked targets are preserved.
 
-**Getting the scan report completes the first step.** `Confirmed` means matching evidence was found, not that removal is approved. `ReviewOnly` means manual review only. Stop here if anything is unclear.
+**Seeing the selection window means the scan is complete.** `Confirmed` means matching evidence was found, not that removal is approved. You still decide item by item. If anything is unclear, keep the report and stop.
 
 [Beginner steps and common questions](references/getting-started.en.md) · [Agent guidance](references/doubao.md) · [Ask for help with redacted details](https://github.com/LongXL6/windows-360-cleaner/issues/new?template=help.yml)
 
@@ -57,8 +58,8 @@ Doubao supports file uploads, but terminal access varies by product version and 
 ```text
 Read SKILL.md from https://github.com/LongXL6/windows-360-cleaner before doing anything.
 First state whether you can actually access this Windows PC's local PowerShell session. If you can, run Scan only, explain Confirmed, ReviewOnly, and preserved items, then stop for my explicit approval.
-If you cannot access the terminal, do not claim local execution. Ask me to extract the full ZIP and run scripts\Scan-360.cmd. Keep the original JSON locally; share only a separate redacted copy or excerpt with cloud services, and state that an excerpt cannot establish the full result.
-Wait until I review the local original and explicitly approve. Then use that same unchanged original for Remove, never the redacted copy.
+If you cannot access the terminal, do not claim local execution. Ask me to extract the full ZIP and run scripts\Scan-360.cmd. Explain that the selector starts empty and enables only green Confirmed rows. I should choose Keep report only first, retain the original JSON locally, and share only a separate redacted copy or excerpt.
+Wait until I understand the result and explicitly decide. Then guide me to run a fresh Scan, check only approved green targets, and choose Remove selected. Unchecked and yellow rows must stay preserved; never use a redacted copy for removal.
 After removal, run Verify and redact a separate copy before any cloud upload. Report every field required by SKILL.md, including zero values; mark unavailable values as unknown rather than inventing them.
 ```
 
@@ -84,6 +85,7 @@ The core rule is simple: **an agent may scan and explain automatically, but it m
 | Control | Behavior |
 |---|---|
 | Scan before removal | `Scan` is read-only; `Remove` requires the reviewed Scan JSON, a switch, exact phrase, approval, and administrator access |
+| Nothing selected by default | The double-click Scan route opens check boxes; only green `Confirmed` rows are selectable, while unchecked and yellow rows stay preserved |
 | Ambiguity fails safe | Unsupported targets remain `ReviewOnly` |
 | Broad paths rejected | Drive roots, Windows, user profiles, and whole Temp directories cannot become removal targets |
 | Reparse-point defense | Junctions and symbolic links cause the target batch to fail closed |
@@ -133,14 +135,13 @@ Agents that do not support `$skill-name` do not need a renamed repository or sep
 <summary><strong>Manual fallback without an agent</strong></summary>
 
 1. Select **Code → Download ZIP** on GitHub and extract it.
-2. Double-click `scripts\Scan-360.cmd`. It is read-only and does not require administrator access.
-3. Review the generated JSON report.
-4. Only after reviewing exact targets, double-click `scripts\Remove-360.cmd`, read the warnings, press `Y`, and enter `REMOVE-360`.
-5. Drag the same reviewed Scan JSON into the window, press Enter, and accept UAC.
-6. Review the actions, summary, and remaining findings replayed in the original window.
-7. Restart Windows once and double-click `scripts\Verify-360.cmd`.
+2. Double-click `scripts\Scan-360.cmd`. After its read-only scan, review the selection window. Nothing is checked by default.
+3. Check only the green Confirmed targets you approve. Yellow rows are disabled; **Keep report only** exits without removal.
+4. Choose **Remove selected**, review the second warning, and accept UAC only when the list is correct.
+5. Review the measured result. Unchecked targets stay preserved.
+6. Restart Windows once and double-click `scripts\Verify-360.cmd`.
 
-Removal is permanent and does not use the Recycle Bin. The Scan JSON is the exact approval contract: newly confirmed but unapproved findings are reported, not removed. An incorrect phrase, Enter, or `N` exits safely.
+Removal is permanent and does not use the Recycle Bin. The selector binds the chosen stable IDs to the exact SHA-256 of the Scan JSON. A modified report or changed/missing selected target aborts before mutation. Newly confirmed but unapproved findings are reported, not removed. `Remove-360.cmd` remains an advanced whole-report fallback.
 
 </details>
 
@@ -174,7 +175,7 @@ Remove can enable browser-profile deletion only when the approved Scan report us
 
 ## Result reporting
 
-The Remove report's `Summary` measures the approved/current intersection and changes since approval, plus removed objects, files, directories, logical bytes, services, tasks, registry entries, processes, vendor-uninstaller outcomes, failures, pending actions, retries, and unresolved targets. It also records `PostVendorMutationBlocked` and `ImmediateRescanComplete`. Path totals are deduplicated before/after snapshots. Logical file size is not guaranteed freed disk space because hard links, sparse files, and compression can differ. If the immediate rescan is incomplete, the report Findings are only the last safe pre-mutation snapshot, current remaining state is unknown, and the run requires attention. The final post-restart result comes from Verify report `Findings`.
+The Remove report's `Summary` measures the selected and explicitly preserved findings, the approved/current intersection and changes since approval, plus removed objects, files, directories, logical bytes, services, tasks, registry entries, processes, vendor-uninstaller outcomes, failures, pending actions, retries, and unresolved targets. It also records the selected targets still present, `PostVendorMutationBlocked`, and `ImmediateRescanComplete`. Path totals are deduplicated before/after snapshots. Logical file size is not guaranteed freed disk space because hard links, sparse files, and compression can differ. If the immediate rescan is incomplete, the report Findings are only the last safe pre-mutation snapshot, current remaining state is unknown, and the run requires attention. The final post-restart result comes from Verify report `Findings`.
 
 ## Validate the skill package
 

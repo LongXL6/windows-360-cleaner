@@ -474,6 +474,89 @@ try {
             -Message 'The newly confirmed browser profile must require a new approval.'
     }
 
+    Invoke-TestCase -Run $run -Name 'selection IDs stay stable across the HKCU elevation boundary' -Test {
+        $sid = 'S-1-5-21-111111111-222222222-333333333-1001'
+        $approved = New-ApprovalFixtureFinding -Kind 'Startup' -Name 'Approved startup' `
+            -Target 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+            -RemovalType 'RegistryValue' -ValueName '360Fixture' -IdentityFingerprint ('A1' * 32)
+        $elevated = New-ApprovalFixtureFinding -Kind 'Startup' -Name 'Elevated startup' `
+            -Target ('Registry::HKEY_USERS\{0}\Software\Microsoft\Windows\CurrentVersion\Run' -f $sid) `
+            -RemovalType 'RegistryValue' -ValueName '360Fixture' -IdentityFingerprint ('A1' * 32)
+
+        $approvedId = Get-FindingSelectionId -Finding $approved -UserSid $sid
+        $elevatedId = Get-FindingSelectionId -Finding $elevated -UserSid $sid
+
+        Assert-TestTrue -Condition ($approvedId -match '^[0-9A-F]{64}$') `
+            -Message 'A selectable approved finding did not receive a SHA-256 selection ID.'
+        Assert-TestEqual -Expected $approvedId -Actual $elevatedId `
+            -Message 'The same per-user registry resource changed selection identity after elevation.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'selective removal resolves only exact approved current IDs' -Test {
+        $sid = 'S-1-5-21-111111111-222222222-333333333-1001'
+        $approvedA = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Selected path' `
+            -Target 'C:\Program Files\360\Selected'
+        $approvedB = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Preserved path' `
+            -Target 'C:\Program Files\360\Preserved'
+        $currentA = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Current selected path' `
+            -Target 'c:\program files\360\SELECTED'
+        $currentB = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Current preserved path' `
+            -Target 'C:\Program Files\360\Preserved'
+        $selectedId = Get-FindingSelectionId -Finding $approvedA -UserSid $sid
+
+        $resolved = Resolve-CleanupSelection -Approved @($approvedA, $approvedB) `
+            -Eligible @($currentA, $currentB) -SelectedIds @($selectedId) -UserSid $sid -SelectionApplied $true
+
+        Assert-TestEqual -Expected 1 -Actual @($resolved.Eligible).Count `
+            -Message 'Selective resolution did not return exactly one selected current finding.'
+        Assert-TestEqual -Expected 'Current selected path' -Actual $resolved.Eligible[0].Name `
+            -Message 'Selective resolution returned the wrong current finding.'
+        Assert-TestEqual -Expected 1 -Actual @($resolved.Unselected).Count `
+            -Message 'The unselected approved finding was not explicitly preserved.'
+        Assert-TestEqual -Expected 'Current preserved path' -Actual $resolved.Unselected[0].Name `
+            -Message 'Selective resolution preserved the wrong finding.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'selective removal fails before mutation when approval or current state changed' -Test {
+        $sid = 'S-1-5-21-111111111-222222222-333333333-1001'
+        $approved = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Approved path' `
+            -Target 'C:\Program Files\360\Selected'
+        $selectedId = Get-FindingSelectionId -Finding $approved -UserSid $sid
+
+        Assert-TestThrows -Operation {
+            Resolve-CleanupSelection -Approved @($approved) -Eligible @() `
+                -SelectedIds @($selectedId) -UserSid $sid -SelectionApplied $true | Out-Null
+        } -Message 'A selected finding that disappeared after approval was not rejected.'
+
+        Assert-TestThrows -Operation {
+            Resolve-CleanupSelection -Approved @($approved) -Eligible @($approved) `
+                -SelectedIds @(('F0' * 32)) -UserSid $sid -SelectionApplied $true | Out-Null
+        } -Message 'An ID absent from the bound approval report was not rejected.'
+
+        Assert-TestThrows -Operation {
+            ConvertFrom-CleanupSelectionIds -Value (($selectedId, $selectedId) -join ';') | Out-Null
+        } -Message 'Duplicate selection IDs were not rejected.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'a selected parent cannot consume an unselected approved child path' -Test {
+        $sid = 'S-1-5-21-111111111-222222222-333333333-1001'
+        $parent = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Parent' -Target 'C:\Program Files\360'
+        $child = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Child' -Target 'C:\Program Files\360\Child'
+        $parentId = Get-FindingSelectionId -Finding $parent -UserSid $sid
+
+        Assert-TestThrows -Operation {
+            Resolve-CleanupSelection -Approved @($parent, $child) -Eligible @($parent, $child) `
+                -SelectedIds @($parentId) -UserSid $sid -SelectionApplied $true | Out-Null
+        } -Message 'A selected parent path was allowed to remove an unselected approved child target.'
+
+        $reviewChild = New-ApprovalFixtureFinding -Kind 'Path' -Name 'Downgraded child' `
+            -Target 'C:\Program Files\360\ReviewChild' -Confidence 'ReviewOnly' -RemovalType 'None'
+        Assert-TestThrows -Operation {
+            Resolve-CleanupSelection -Approved @($parent) -Eligible @($parent) -Current @($parent, $reviewChild) `
+                -SelectedIds @($parentId) -UserSid $sid -SelectionApplied $true | Out-Null
+        } -Message 'A selected parent path was allowed to consume a current ReviewOnly child target.'
+    }
+
     Invoke-TestCase -Run $run -Name 'process removal uses the injectable exact-identity stop operation' -Test {
         $finding = New-ApprovalFixtureFinding -Kind 'Process' -Name 'Current process' `
             -Target '4242' -RemovalType 'Process' -ValueName 'C:\Program Files\360\agent.exe'
@@ -502,8 +585,10 @@ try {
         $resultReport = 'C:\结果 报告\清理 结果.json'
         $hash = 'A1' * 32
         $runId = 'B2' * 16
+        $selectionId = 'C3' * 32
         $argumentLine = New-ElevatedCleanupArgumentLine -ScriptPath $scriptPath `
             -ApprovedReport $approvedReport -ApprovedReportHash $hash -OutcomeRunId $runId `
+            -SelectedFindingIds $selectionId -SelectionApplied $true `
             -ReportPath $resultReport `
             -IncludeBrowserProfiles $true -AllowExplorerRestart $true -ForceLockedTargets $true `
             -IncludeIdentityInReport $true
@@ -516,6 +601,8 @@ try {
             -Message 'The elevated command did not preserve the approved report hash.'
         Assert-TestTrue -Condition $argumentLine.Contains(('-OutcomeRunId {0}' -f $runId)) `
             -Message 'The elevated command did not preserve the removal run identity.'
+        Assert-TestTrue -Condition $argumentLine.Contains(('-SelectedFindingIds "{0}"' -f $selectionId)) `
+            -Message 'The elevated command did not preserve the selected finding IDs.'
         Assert-TestTrue -Condition $argumentLine.Contains(('-ReportPath "{0}"' -f $resultReport)) `
             -Message 'The elevated command did not preserve the quoted outcome report path.'
         foreach ($flag in @(

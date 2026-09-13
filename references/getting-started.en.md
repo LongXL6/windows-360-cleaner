@@ -15,13 +15,13 @@ You need Windows 10/11 and Windows PowerShell 5.1 or newer. A phone can display 
 
 This is a script package; there is no `.exe` installer to find. Downloading it does not start scanning or removal.
 
-## 2. Double-click Scan
+## 2. Double-click Scan, then choose item by item
 
-Run `scripts\Scan-360.cmd`. The window shows `Windows 360 Cleaner - Scan`, findings, and a **`Report:`** path ending in `.json`. Scan reads local state and creates a report without removing target software or requesting administrator access.
+Run `scripts\Scan-360.cmd`. It performs a read-only scan, creates a JSON report, and then opens **Choose items to remove**. Scanning does not remove target software or request administrator access.
 
-Reports normally go to the Windows Desktop with a name like `360-cleanup-report-date-time-random.json`. If Windows returns no Desktop path, the script uses the temporary directory. A redirected Desktop, including OneDrive, may also be elsewhere. **Use the actual `Report:` path shown in the window.**
+Green rows are selectable `Confirmed` findings. Yellow rows are view-only; protected browser data and offline findings are disabled by default. **Every check box starts empty.** The report path appears at the bottom and normally points to the Desktop, including any OneDrive redirection.
 
-The window waits for a key press at the end. Note the path before closing it. An error without a successfully written report does not mean the scan completed.
+Choose **Keep report only** to stop without removing anything. To continue, check only the green targets you understand and choose **Remove selected**. A second permanent-removal warning opens with **No** as the default.
 
 ## 3. Read the result before deciding
 
@@ -50,23 +50,22 @@ Omitting the separate `ComputerName` and `User` fields does **not** make a repor
 
 - Keep the original Scan JSON unchanged on your PC. It is the approval input for Remove.
 - For discussion, make a separate copy or excerpt and redact usernames, private paths, SIDs, and unrelated task arguments. Label it as a redacted excerpt, not a full result.
-- Do not use the redacted copy for Remove or edit the original to select targets. The double-click workflow processes the approved findings in the whole report that are still Confirmed; it has no per-item selection UI.
+- Do not use the redacted copy for Remove or edit the original to select targets. Use the post-scan check boxes. Selected stable IDs are bound to the original report SHA-256, so a modified report is rejected.
 - Decide what you are comfortable uploading before using a cloud assistant. You can also read the report locally without uploading it.
 
-## 4. Remove only after approval
+## 4. Confirm removal in the selection window
 
 Back up important files and browser data. If a working vendor uninstall entry exists in Windows Installed apps, you can use it first and run a fresh Scan for leftovers.
 
-Removal is permanent and does not use the Recycle Bin. Continue only after understanding and approving all proposed targets in the original Scan report. Stop if any target should stay.
+Removal is permanent and does not use the Recycle Bin. Check only the targets you understand and approve. Unchecked targets stay preserved.
 
 1. Close the target software and related browsers.
-2. Double-click `scripts\Remove-360.cmd`.
-3. Read the warnings. To continue, press `Y`, then type **`REMOVE-360`** when asked.
-4. Drag the same reviewed, unchanged original Scan JSON into the window and press Enter. Do not use a Verify report or a redacted copy.
-5. If Windows requests administrator access, confirm it is for your action before deciding to allow it. Contact the PC administrator if you lack access.
-6. Return to the original window for actions and `Removal summary`, and keep the new report. New unapproved targets are not automatically removed; skipped, failed, and pending items still need attention.
+2. In the post-scan window, check targets and choose **Remove selected**.
+3. Review the displayed list again and choose **Yes** only when correct. **No** is the default.
+4. If Windows requests administrator access, confirm it is for your action before deciding to allow it. Contact the PC administrator if you lack access.
+5. Read the result box for selected, unselected preserved, removed, failed, and still-present selected items; keep the report.
 
-To cancel at the initial `Continue? [Y/N]` prompt, press `N`. The double-click confirmation is `REMOVE-360`; advanced PowerShell examples use a different phrase.
+`scripts\Remove-360.cmd` remains an advanced whole-report fallback and is not the beginner route for choosing only some targets. The selector rechecks the exact report hash and IDs across UAC. If a selected target changes, disappears, or loses evidence, the selected run aborts before mutation and requires a fresh scan.
 
 ## 5. Restart and Verify
 
