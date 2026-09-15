@@ -1371,6 +1371,51 @@ try {
         -Target 'C:\Users\Fixture\AppData\Roaming\360se6\Application' -ProductKey '360SafeBrowser' -DetailCode 'DetectedSameIdentity' -CurrentConfidence 'Confirmed'
     $browserFinding = New-UiFinding -Name '360se6 browser application' -Target 'C:\Users\Fixture\AppData\Roaming\360se6\Application' -ProductKey '360SafeBrowser'
 
+    Invoke-TestCase -Run $run -Name 'verify outcome: changed or unreadable kept items require attention in both languages' -Test {
+        try {
+            foreach ($language in @('zh', 'en')) {
+                Set-W360UiLanguage -Language $language
+                foreach ($keptState in @('Changed', 'Unknown', 'UnexpectedState')) {
+                    $path = Join-Path $fixtureRoot ('verify-kept-' + $language + '-' + $keptState + '.json')
+                    $keptItem = New-UiItemStatus -Category 'Preserved' -State $keptState -ProductKey '360SafeBrowser' -DetailCode 'ProbeUnreadable'
+                    Write-UiVerifyReport -Path $path -TaskVerification (New-UiTaskVerification -Status 'Completed' -Selected $duohuiSelected -Preserved @($keptItem))
+                    $outcome = Get-W360VerifyOutcome -ExitCode 0 -ReportPath $path
+                    Assert-TestEqual -Expected 'TaskCompleted' -Actual $outcome.State -Message 'Kept anomalies do not undo confirmed selected deletion.'
+                    Assert-TestEqual -Expected 'Warning' -Actual (Get-W360OutcomeTone -Outcome $outcome) -Message "$language/$keptState must not be green."
+                    Assert-TestFalse ($outcome.Headline -eq (Get-W360Text -Key 'Verify.TaskCompleted.Headline')) 'The headline must mention kept items needing attention.'
+                    Assert-TestFalse (@($outcome.NextSteps) -contains (Get-W360Text -Key 'Verify.Next.Done')) 'An unresolved kept item must not end with close now.'
+                    Assert-TestFalse ($outcome.Detail.Contains((Get-W360Text -Key 'Verify.TaskCompleted.PreservedKept'))) 'Unconfirmed kept items must not be called normal.'
+                    Assert-TestEqual -Expected 1 -Actual ([int]$outcome.PreservedChangedCount + [int]$outcome.PreservedUnknownCount) -Message 'Count the anomaly from items, including an unexpected state.'
+                    Assert-TestEqual -Expected 3 -Actual @($outcome.Cleared).Count -Message 'The deleted items remain confirmed.'
+                }
+            }
+        }
+        finally { Set-W360UiLanguage -Language zh }
+
+        # Coexisting warnings must all survive, including when new findings or incomplete coverage lead the page.
+        $kept = @('Absent', 'Changed', 'Unknown') | ForEach-Object { New-UiItemStatus -Category 'Preserved' -State $_ -Target ('C:\Fixture\' + $_) }
+        foreach ($variant in @('Completed', 'Incomplete', 'New', 'Remaining', 'Unknown')) {
+            $path = Join-Path $fixtureRoot ('verify-kept-mixed-' + $variant + '.json')
+            $selected = $duohuiSelected
+            $status = 'Completed'
+            $newItems = @()
+            $coverage = [pscustomobject]@{ Complete = $true; Issues = @() }
+            $code = 0
+            if ($variant -eq 'Incomplete') { $coverage.Complete = $false; $code = 3 }
+            if ($variant -eq 'New') { $newItems = @((New-UiItemStatus -Category 'New' -State 'New')); $code = 4 }
+            if ($variant -in @('Remaining', 'Unknown')) {
+                $status = $variant
+                $selected = @((New-UiItemStatus -Category 'Selected' -State $variant))
+                $code = if ($variant -eq 'Remaining') { 2 } else { 3 }
+            }
+            Write-UiVerifyReport -Path $path -Coverage $coverage -TaskVerification (New-UiTaskVerification -Status $status -Selected $selected -Preserved @($kept) -New $newItems)
+            $outcome = Get-W360VerifyOutcome -ExitCode $code -ReportPath $path
+            Assert-TestTrue ($outcome.Detail.Contains('有 1 项不见了') -and $outcome.Detail.Contains('有 1 项发生了变化') -and $outcome.Detail.Contains('有 1 项暂时无法确认')) "$variant must explain every kept anomaly."
+            Assert-TestFalse ((Get-W360OutcomeTone -Outcome $outcome) -eq 'Success') "$variant must not be green."
+            Assert-TestFalse (($outcome.NextSteps -join ' ').Contains('可以关闭了')) "$variant must not suggest everything is done."
+        }
+    }
+
     Invoke-TestCase -Run $run -Name 'verify outcome acceptance: Duohui cleared and the kept browser is not a failure' -Test {
         $path = Join-Path $fixtureRoot 'verify-acceptance.json'
         Write-UiVerifyReport -Path $path -Findings @($browserFinding) -TaskVerification (New-UiTaskVerification -Status 'Completed' -Selected $duohuiSelected -Preserved @($browserPreserved))
@@ -1427,7 +1472,7 @@ try {
             -Target 'C:\Users\Fixture\AppData\Roaming\360se6\Application' -ProductKey '360SafeBrowser' -DetailCode 'ProbeUnreadable'
         Write-UiVerifyReport -Path $unknownKeptPath -TaskVerification (New-UiTaskVerification -Status 'Completed' -Selected $duohuiSelected -Preserved @($unknownKept))
         $unknownKeptOutcome = Get-W360VerifyOutcome -ExitCode 0 -ReportPath $unknownKeptPath
-        Assert-TestEqual -Expected '上次选的 3 项都确认删掉了。' -Actual $unknownKeptOutcome.Detail -Message 'An unconfirmed kept item gets no promise either way.'
+        Assert-TestTrue ($unknownKeptOutcome.Detail.Contains('你保留的内容里有 1 项暂时无法确认是否还在。')) 'An unconfirmed kept item is explained without promising it is present or gone.'
         Assert-TestSequenceEqual -Expected @('Unknown', 'Cleared') -Actual @($unknownKeptOutcome.GridSections | ForEach-Object { $_.Key }) -Message 'An unconfirmed kept item is listed once, as unconfirmed.'
 
         # Every result page names kept items that are gone, not only the completed one.

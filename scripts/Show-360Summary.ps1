@@ -162,6 +162,7 @@ $script:SummaryTexts = @{
     'Agent.Next.RemoveNoRecord'           = @('请重启电脑。重启好了告诉我，我重新检查一遍电脑，看看现在还有什么。', 'Please restart the PC. Tell me when it has restarted and I will check the whole PC again to see what is there now.')
     'Agent.Next.Done'                     = @('不用再做什么了。', 'There is nothing more to do.')
     'Agent.Next.KeptGone'                 = @('如果还需要不见了的那些内容，请重新安装；别的不用再做什么了。', 'If you still need the items that are gone, install them again; there is nothing else to do.')
+    'Agent.Next.KeptUnconfirmed'          = @('先确认想保留的软件能否正常使用，再检查一次；仍不确定时，把结果发给帮你处理的人。', 'Check whether the software you wanted to keep still works, then check again. If you are still unsure, share the result with the person helping you.')
     'Agent.Next.IncompleteRetry'          = @('有些地方没检查完，可以过一会儿让我再检查一次。', 'Some places were not fully checked; you can ask me to check again a little later.')
     'Agent.Next.RescanDecide'             = @('要不要我重新检查一遍电脑，再告诉你哪些建议删除？', 'Shall I check the PC again and tell you which items I suggest deleting?')
     'Agent.Next.RescanLook'               = @('要不要我重新检查一遍电脑，看看现在还有什么？', 'Shall I check the PC again to see what is there now?')
@@ -1000,10 +1001,12 @@ function Build-VerifySummary {
         [void]$sectionData.Add([ordered]@{ Key = [string]$section.Key; Title = [string]$section.Title; Count = $items.Count; Items = @($itemData) })
     }
 
-    $rescan = $false
+    $keptUnconfirmed = ([long]$outcome.PreservedChangedCount + [long]$outcome.PreservedUnknownCount) -gt 0
+    $rescan = $keptUnconfirmed
     $nextKey = switch ([string]$outcome.State) {
         'TaskCompleted' {
             if ($outcome.CoverageComplete -eq $false) { 'Agent.Next.IncompleteRetry' }
+            elseif ($keptUnconfirmed) { 'Agent.Next.KeptUnconfirmed' }
             elseif ([long]$outcome.PreservedGoneCount -gt 0) { 'Agent.Next.KeptGone' }
             else { 'Agent.Next.Done' }
         }
@@ -1021,6 +1024,12 @@ function Build-VerifySummary {
         default { 'Agent.Next.Retry' }
     }
     $nextText = Get-SummaryText -Key $nextKey
+    if ($keptUnconfirmed -and $nextKey -ne 'Agent.Next.KeptUnconfirmed') {
+        $nextText += (Get-W360Text -Key 'Common.SentenceSeparator') + (Get-SummaryText -Key 'Agent.Next.KeptUnconfirmed')
+    }
+    if ($keptUnconfirmed -and [long]$outcome.PreservedGoneCount -gt 0) {
+        $nextText += (Get-W360Text -Key 'Common.SentenceSeparator') + (Get-W360Text -Key 'Verify.Next.KeptGone')
+    }
     $lines.Add('')
     $lines.Add((Get-W360Text -Key 'Ui.NextSteps' -Arguments @($nextText)))
 
@@ -1035,10 +1044,12 @@ function Build-VerifySummary {
     $keptGone = [long]$outcome.PreservedGoneCount
     $Result.Data['NextStep'] = $nextText
     $Result.Data['KeptGoneCount'] = $keptGone
+    $Result.Data['KeptChangedCount'] = [long]$outcome.PreservedChangedCount
+    $Result.Data['KeptUnknownCount'] = [long]$outcome.PreservedUnknownCount
     $Result.Data['Tone'] = $tone
 
-    Add-SummaryAgentLine -Result $Result -Text ('mode=Verify; state={0}; exit-code={1}; task-status={2}; coverage-complete={3}; kept-gone={4}; tone={5}' -f `
-            $outcome.State, (Get-SummaryExitCodeText), $(if ($outcome.TaskStatus) { $outcome.TaskStatus } else { 'none' }), (Get-SummaryBool $outcome.CoverageComplete), $keptGone, $tone)
+    Add-SummaryAgentLine -Result $Result -Text ('mode=Verify; state={0}; exit-code={1}; task-status={2}; coverage-complete={3}; kept-gone={4}; tone={5}; kept-changed={6}; kept-unknown={7}' -f `
+            $outcome.State, (Get-SummaryExitCodeText), $(if ($outcome.TaskStatus) { $outcome.TaskStatus } else { 'none' }), (Get-SummaryBool $outcome.CoverageComplete), $keptGone, $tone, $outcome.PreservedChangedCount, $outcome.PreservedUnknownCount)
     if ($rescan -or @('Failed', 'InvalidReport', 'GlobalIncomplete') -contains [string]$outcome.State -or
         ([string]$outcome.State -eq 'TaskCompleted' -and $outcome.CoverageComplete -eq $false)) {
         $scanPath = New-SummaryReportPath -NextTo $ReportPath -Kind 'scan'
@@ -1055,6 +1066,9 @@ function Build-VerifySummary {
     }
     if ($keptGone -gt 0) {
         Add-SummaryAgentLine -Result $Result -Text 'kept-gone-note=Items the user kept are gone. Tell the user so (and that the uninstaller that came with 360 may have removed them when the text says so); never call this a clean success.'
+    }
+    if ($keptUnconfirmed) {
+        Add-SummaryAgentLine -Result $Result -Text 'kept-unconfirmed-note=Items the user kept changed or could not be checked. Explain the warning and next step; do not say everything is fine, assume they are gone, or offer to delete them.'
     }
     Add-SummaryAgentLine -Result $Result -Text 'note=This check is read-only. Items the user kept are not failures. Any new deletion needs a new check and a new explicit choice.'
 }

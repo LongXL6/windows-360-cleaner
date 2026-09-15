@@ -1914,8 +1914,7 @@ try {
         $headlines = @{}
         foreach ($case in $cases) {
             Assert-TestEqual $case.State ([string]$case.Outcome.State) ('Fixture verify state for ' + $case.Name + '.')
-            # The kept-item-gone case shares the TaskCompleted headline on purpose; its detail differs.
-            if ($case.Name -ne 'TaskCompletedKeptGone') { $headlines[$case.Name] = [string]$case.Outcome.Headline }
+            $headlines[$case.Name] = [string]$case.Outcome.Headline
             Invoke-LayoutPageCase -Label ('Verify ' + $case.Name) -Build { New-SelectorVerifyResultPage -Outcome $case.Outcome } -Check {
                 param($page, $form, $label)
                 Assert-TestEqual 'VerifyResult' $page.Kind "$label kind."
@@ -2006,6 +2005,40 @@ try {
         Assert-TestEqual '上次选的都删干净了，但有些地方没检查完' ([string]$cases[2].Outcome.Headline) 'An incomplete check says so in the headline.'
         Assert-TestEqual '上次选的看起来都删掉了，但这次检查没做完整' ([string]$cases[6].Outcome.Headline) 'Unknown without a count invents no number.'
         Assert-TestEqual '没有找到还需要处理的 360 内容' ([string]$cases[8].Outcome.Headline) 'Global clean headline.'
+    }
+
+    Invoke-TestCase -Run $run -Name 'verify kept anomalies: visible warnings and rescan primary in both languages' -Test {
+        try {
+            foreach ($language in @('zh', 'en')) {
+                Set-W360UiLanguage -Language $language
+                foreach ($states in @(@('Changed'), @('Unknown'), @('Absent', 'Changed', 'Unknown'))) {
+                    $keptItems = @($states | ForEach-Object { New-LayoutItemStatus -Category 'Preserved' -State $_ -Target ('C:\Fixture\' + $_) })
+                    $outcome = Get-LayoutVerifyOutcome -Directory $fixtureDirectory -TaskVerification (New-LayoutTaskVerification -Status 'Completed' `
+                        -Selected @((New-LayoutItemStatus -Category 'Selected' -State 'Absent')) -Preserved $keptItems)
+                    Invoke-LayoutPageCase -Label ('Kept attention ' + $language + ' ' + ($states -join '-')) -Build { New-SelectorVerifyResultPage -Outcome $outcome } -Check {
+                        param($page, $form, $label)
+                        Assert-TestEqual 'Rescan' $page.PrimaryButton.Name "$label rescan must lead."
+                        Assert-TestTrue (Test-LayoutColor -Color $page.HeadlineLabel.ForeColor -Name 'Warning') "$label must be yellow."
+                        Assert-TestTrue ($page.Data['NextStepsLabel'].Text.Contains((Get-W360Text -Key 'Ui.Button.Rescan'))) "$label must name a visible follow-up button."
+                        Assert-TestFalse ($page.Data['NextStepsLabel'].Text.Contains((Get-W360Text -Key 'Verify.Next.Done'))) "$label must not say close now."
+                    }
+                }
+                foreach ($variant in @('Incomplete', 'New', 'Remaining', 'Unknown')) {
+                    $selectedState = if ($variant -in @('Remaining', 'Unknown')) { $variant } else { 'Absent' }
+                    $status = if ($selectedState -eq 'Absent') { 'Completed' } else { $variant }
+                    $newItems = @()
+                    if ($variant -eq 'New') { $newItems = @((New-LayoutItemStatus -Category 'New' -State 'New')) }
+                    $outcome = Get-LayoutVerifyOutcome -Directory $fixtureDirectory -CoverageComplete ($variant -ne 'Incomplete') `
+                        -TaskVerification (New-LayoutTaskVerification -Status $status -Selected @((New-LayoutItemStatus -Category 'Selected' -State $selectedState)) -Preserved $keptItems -New $newItems)
+                    Invoke-LayoutPageCase -Label ('Mixed kept attention ' + $language + ' ' + $variant) -Build { New-SelectorVerifyResultPage -Outcome $outcome } -Check {
+                        param($page, $form, $label)
+                        Assert-TestEqual 'Rescan' $page.PrimaryButton.Name "$label rescan must lead."
+                        Assert-TestFalse (Test-LayoutColor -Color $page.HeadlineLabel.ForeColor -Name 'Success') "$label must not be green."
+                    }
+                }
+            }
+        }
+        finally { Set-W360UiLanguage -Language zh }
     }
 
     Invoke-TestCase -Run $run -Name 'error and stopped pages: say what happened, keep technical text one click away' -Test {

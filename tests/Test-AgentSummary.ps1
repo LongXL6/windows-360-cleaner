@@ -1081,6 +1081,32 @@ try {
         Assert-TestNotNull -Actual (Get-AgentLineValue -AgentLines $goneRun.AgentLines -Key 'kept-gone-note') -Message 'The agent is not warned about kept items that are gone.'
         Assert-AgentPlainText -Text $goneRun.UserText -Label 'Kept-gone verification text'
 
+        # Kept anomalies must reach the user and machine-readable guidance without authorising another deletion.
+        foreach ($language in @('zh', 'en')) {
+            foreach ($states in @(@('Changed'), @('Unknown'), @('Absent', 'Changed', 'Unknown'))) {
+                $attentionValue = Read-W360JsonFile -Path $verify.ReportPath
+                for ($index = 0; $index -lt $states.Count; $index++) {
+                    $attentionValue.TaskVerification.Preserved[$index].State = $states[$index]
+                }
+                $attentionPath = New-W360ReportPath -Directory $case.ReportDirectory -Kind 'verify'
+                [IO.File]::WriteAllText($attentionPath, ($attentionValue | ConvertTo-Json -Depth 20), (New-Object Text.UTF8Encoding($false)))
+                $attention = Invoke-AgentSummaryJson -Arguments @{ Report = $attentionPath; ExitCode = '0'; Language = $language }
+                Assert-TestEqual -Expected 'TaskCompleted' -Actual ([string]$attention.State) -Message 'Confirmed deletion is still completed.'
+                Assert-TestEqual -Expected 'Warning' -Actual ([string]$attention.Tone) -Message 'Kept anomalies must warn the agent.'
+                Assert-TestEqual -Expected @($states | Where-Object { $_ -eq 'Changed' }).Count -Actual ([int]$attention.KeptChangedCount) -Message 'Changed kept items are counted from the item records.'
+                Assert-TestEqual -Expected @($states | Where-Object { $_ -eq 'Unknown' }).Count -Actual ([int]$attention.KeptUnknownCount) -Message 'Unknown kept items are counted from the item records.'
+                $normalHeadline = if ($language -eq 'zh') { '上次选的都删干净了' } else { 'Everything selected last time is gone' }
+                Assert-TestFalse -Condition ([string]$attention.Headline -eq $normalHeadline) -Message 'The headline must call out kept anomalies.'
+                Assert-TestTrue -Condition ([string]$attention.NextStep).Contains((Get-SummaryTestText -Key 'Agent.Next.KeptUnconfirmed' -Language $language)) -Message 'The user gets a kept-item follow-up.'
+                Assert-TestFalse -Condition ([string]$attention.NextStep).Contains((Get-SummaryTestText -Key 'Agent.Next.Done' -Language $language)) -Message 'The user must not be told nothing is needed.'
+                Assert-TestTrue -Condition ([string]$attention.CheckAgainCommand).Contains('-Mode Scan') -Message 'The offered follow-up is a read-only scan.'
+                Assert-TestNotNull -Actual (Get-AgentLineValue -AgentLines $attention.AgentLines -Key 'kept-unconfirmed-note') -Message 'The agent must explain the uncertainty.'
+                $attentionText = Invoke-AgentSummary -Arguments @{ Report = $attentionPath; ExitCode = '0'; Language = $language }
+                Assert-AgentNoRemoveCommand -Run $attentionText -Label 'Kept anomaly verification'
+                Assert-AgentPlainText -Text $attentionText.UserText -Label 'Kept anomaly verification text'
+            }
+        }
+
         # Finished, but not every place was checked: never "nothing more to do".
         $incompleteValue = Read-W360JsonFile -Path $verify.ReportPath
         $incompleteValue.ScanCoverage = [pscustomobject]@{ Complete = $false; Issues = @([pscustomobject]@{ Area = 'Services'; Target = ''; Detail = 'Simulated' }) }
