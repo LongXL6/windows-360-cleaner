@@ -485,9 +485,12 @@ $script:W360StringsPartD = @{
     'Verify.Invalid.Headline'                    = @{ zh = '出了点问题'; en = 'Something went wrong' }
     'Verify.Invalid.Detail'                      = @{ zh = '检查结果读不出来或者内容不对，不能用。没有删除任何东西。'; en = 'The check result could not be read or is not in the expected format, so it cannot be used. Nothing was deleted.' }
     'Verify.TaskCompleted.Headline'              = @{ zh = '上次选的都删干净了'; en = 'Everything selected last time is gone' }
+    'Verify.TaskCompletedKeptAttention.Headline' = @{ zh = '上次选的都删干净了，但你保留的内容需要检查'; en = 'Selected items are gone; check the items you kept' }
     'Verify.TaskCompletedIncomplete.Headline'    = @{ zh = '上次选的都删干净了，但有些地方没检查完'; en = 'Everything selected last time is gone, but some places were not fully checked' }
     'Verify.TaskCompleted.Detail'                = @{ zh = '上次选的 {0} 项都确认删掉了。'; en = 'All {0} item(s) selected last time are confirmed gone.' }
     'Verify.TaskCompleted.PreservedKept'         = @{ zh = '你保留的内容还在，这是正常的。'; en = 'The items you kept are still there. That is expected.' }
+    'Verify.TaskCompleted.PreservedChanged'      = @{ zh = '你保留的内容里有 {0} 项发生了变化。'; en = '{0} kept item(s) changed.' }
+    'Verify.TaskCompleted.PreservedUnknown'      = @{ zh = '你保留的内容里有 {0} 项暂时无法确认是否还在。'; en = '{0} kept item(s) could not be checked.' }
     'Verify.TaskCompleted.PreservedGone'         = @{ zh = '你保留的内容里有 {0} 项不见了，可能被 360 自带的卸载程序一起删了。如果还需要，请重新安装。'; en = '{0} item(s) you kept are gone; the uninstaller that came with 360 may have removed them. If you still need them, install them again.' }
     'Verify.TaskCompleted.PreservedGonePlain'    = @{ zh = '你保留的内容里有 {0} 项不见了。如果还需要，请重新安装。'; en = '{0} item(s) you kept are gone. If you still need them, install them again.' }
     'Verify.TaskCompletedWithNew.Headline'       = @{ zh = '上次选的都删干净了，但又找到 {0} 项新的 360 内容'; en = 'Everything selected last time is gone, but {0} new 360 item(s) were found' }
@@ -518,6 +521,8 @@ $script:W360StringsPartD = @{
     'Verify.Section.CurrentIdentified'           = @{ zh = '现在还有的 360 内容'; en = '360 items still on this PC' }
     'Verify.Section.CurrentKept'                 = @{ zh = '不删除的'; en = "Won't be deleted" }
     'Verify.Next.Done'                           = @{ zh = '可以关闭了。'; en = 'You can close the tool now.' }
+    'Verify.Next.KeptGone'                       = @{ zh = '如果还需要不见了的那些内容，请重新安装。'; en = 'If you still need the items that are gone, install them again.' }
+    'Verify.Next.KeptUnconfirmed'                = @{ zh = '试试想保留的软件能否正常使用，再点“{0}”；仍不确定时，点“{1}”。'; en = 'Try the software you kept, then click "{0}". Still unsure? Click "{1}".' }
     'Verify.Next.KeptOnly'                       = @{ zh = '可以关闭了。想删除这些的话，先按每一行的说明处理，再重新检查电脑。'; en = 'You can close the tool now. To delete these, first do what each row says, then check the PC again.' }
     'Verify.Next.IncompleteRetry'                = @{ zh = '有些地方没检查完，可以过一会儿再检查一次。'; en = 'Some places were not fully checked; you can check again a little later.' }
     'Verify.Next.RescanDecide'                   = @{ zh = '可以点“{0}”，再决定删不删。'; en = 'You can click "{0}" and then decide whether to delete.' }
@@ -3047,6 +3052,8 @@ function Get-W360OutcomeTone {
         'TaskCompleted' {
             if ((Get-W360PropertyValue -Object $Outcome -Name 'CoverageComplete') -eq $false) { return 'Warning' }
             if ((ConvertTo-W360Int64 (Get-W360PropertyValue -Object $Outcome -Name 'PreservedGoneCount')) -gt 0) { return 'Warning' }
+            if ((ConvertTo-W360Int64 (Get-W360PropertyValue -Object $Outcome -Name 'PreservedChangedCount')) -gt 0) { return 'Warning' }
+            if ((ConvertTo-W360Int64 (Get-W360PropertyValue -Object $Outcome -Name 'PreservedUnknownCount')) -gt 0) { return 'Warning' }
             return 'Success'
         }
         'GlobalClean' { return 'Success' }
@@ -3146,8 +3153,10 @@ function Get-W360VerifyOutcome {
         ReportPath       = $ReportPath
         ExitCode         = $code
         TaskStatus       = ''
-        # Items the user kept that this check found gone; a finished result with any of them is never green.
+        # Kept-item anomalies do not fail the selected task, but a finished result with any is never green.
         PreservedGoneCount = 0
+        PreservedChangedCount = 0
+        PreservedUnknownCount = 0
         ErrorText        = Get-W360ErrorText -StderrLines $StderrLines -StdoutLines $StdoutLines
     }
     $setSectionInfo = {
@@ -3401,8 +3410,14 @@ function Get-W360VerifyOutcome {
         }
         $converted = ConvertTo-W360VerifyItem -Item $item -Category 'Preserved'
         if ($state -ceq 'Present') { [void]$preservedSection.Add($converted) }
-        elseif ($state -ceq 'Changed') { [void]$newOrChanged.Add($converted) }
-        else { [void]$unknownTask.Add($converted) }
+        elseif ($state -ceq 'Changed') {
+            [void]$newOrChanged.Add($converted)
+            $outcome.PreservedChangedCount++
+        }
+        else {
+            [void]$unknownTask.Add($converted)
+            $outcome.PreservedUnknownCount++
+        }
     }
     foreach ($item in $newItems) {
         [void]$newOrChanged.Add((ConvertTo-W360VerifyItem -Item $item -Category 'New'))
@@ -3431,21 +3446,28 @@ function Get-W360VerifyOutcome {
     $newCount = [Math]::Max((ConvertTo-W360Int64 (Get-W360PropertyValue -Object $counts -Name 'NewConfirmed')), [long]$newItems.Count)
     & $setGridSections @('SelectedRemaining', 'Unknown', 'NewOrChanged', 'PreservedGone', 'Preserved', 'Cleared')
 
-    # "What you kept is still there" is said only when every kept item was seen present; kept items that are
-    # gone are named on every result page instead of promised away.
+    # Kept anomalies are separate from selected-task completion and are explained on every result page.
     $preservedStates = @($preservedItems | ForEach-Object { Get-W360StringProperty -Object $_ -Name 'State' })
-    $preservedSentence = ''
+    $preservedAttentionCount = $outcome.PreservedGoneCount + $outcome.PreservedChangedCount + $outcome.PreservedUnknownCount
+    $preservedSentences = New-Object System.Collections.Generic.List[string]
     if ($preservedGoneSection.Count -gt 0) {
         $goneKey = if ($preservedGoneByVendor -gt 0) { 'Verify.TaskCompleted.PreservedGone' } else { 'Verify.TaskCompleted.PreservedGonePlain' }
-        $preservedSentence = Get-W360Text -Key $goneKey -Arguments @($preservedGoneSection.Count)
+        $preservedSentences.Add((Get-W360Text -Key $goneKey -Arguments @($preservedGoneSection.Count)))
     }
-    elseif ($preservedStates.Count -gt 0 -and @($preservedStates | Where-Object { $_ -cne 'Present' }).Count -eq 0) {
-        $preservedSentence = Get-W360Text -Key 'Verify.TaskCompleted.PreservedKept'
+    if ($outcome.PreservedChangedCount -gt 0) {
+        $preservedSentences.Add((Get-W360Text -Key 'Verify.TaskCompleted.PreservedChanged' -Arguments @($outcome.PreservedChangedCount)))
     }
+    if ($outcome.PreservedUnknownCount -gt 0) {
+        $preservedSentences.Add((Get-W360Text -Key 'Verify.TaskCompleted.PreservedUnknown' -Arguments @($outcome.PreservedUnknownCount)))
+    }
+    if ($preservedStates.Count -gt 0 -and $preservedAttentionCount -eq 0) {
+        $preservedSentences.Add((Get-W360Text -Key 'Verify.TaskCompleted.PreservedKept'))
+    }
+    $preservedSentence = $preservedSentences -join (Get-W360Text -Key 'Common.SentenceSeparator')
     $joinDetail = {
-        param([string]$First, [switch]$GoneOnly)
+        param([string]$First, [switch]$WarningsOnly)
         if ([string]::IsNullOrWhiteSpace($preservedSentence)) { return $First }
-        if ($GoneOnly -and $preservedGoneSection.Count -eq 0) { return $First }
+        if ($WarningsOnly -and $preservedAttentionCount -eq 0) { return $First }
         return ($First + (Get-W360Text -Key 'Common.SentenceSeparator') + $preservedSentence)
     }
     $verifyTaskButton = Get-W360Text -Key 'Ui.Button.VerifyTask'
@@ -3455,7 +3477,7 @@ function Get-W360VerifyOutcome {
         'Remaining' {
             $outcome.State = 'TaskRemaining'
             $outcome.Headline = Get-W360Text -Key 'Verify.TaskRemaining.Headline' -Arguments @($remainingOrChanged)
-            $outcome.Detail = & $joinDetail (Get-W360Text -Key 'Verify.TaskRemaining.Detail' -Arguments @($remainingOrChanged)) -GoneOnly
+            $outcome.Detail = & $joinDetail (Get-W360Text -Key 'Verify.TaskRemaining.Detail' -Arguments @($remainingOrChanged)) -WarningsOnly
             $outcome.NextSteps = @(Get-W360Text -Key 'Verify.Next.RestartIfLocked' -Arguments @($verifyTaskButton, $helpButton))
         }
         'Unknown' {
@@ -3463,11 +3485,11 @@ function Get-W360VerifyOutcome {
             # The count is shown only when items are unknown; a bad Status or exit code alone has no count.
             if ($unknownCount -gt 0) {
                 $outcome.Headline = Get-W360Text -Key 'Verify.TaskUnknown.Headline' -Arguments @($unknownCount)
-                $outcome.Detail = & $joinDetail (Get-W360Text -Key 'Verify.TaskUnknown.Detail') -GoneOnly
+                $outcome.Detail = & $joinDetail (Get-W360Text -Key 'Verify.TaskUnknown.Detail') -WarningsOnly
             }
             else {
                 $outcome.Headline = Get-W360Text -Key 'Verify.TaskUnknown.HeadlineNoCount'
-                $outcome.Detail = & $joinDetail (Get-W360Text -Key 'Verify.TaskUnknown.DetailNoCount') -GoneOnly
+                $outcome.Detail = & $joinDetail (Get-W360Text -Key 'Verify.TaskUnknown.DetailNoCount') -WarningsOnly
             }
             $outcome.NextSteps = @(Get-W360Text -Key 'Verify.Next.RestartAndRetry' -Arguments @($verifyTaskButton, $helpButton))
         }
@@ -3484,12 +3506,25 @@ function Get-W360VerifyOutcome {
                     $outcome.Headline = Get-W360Text -Key 'Verify.TaskCompletedIncomplete.Headline'
                     $outcome.NextSteps = @(Get-W360Text -Key 'Verify.Next.IncompleteRetry')
                 }
+                elseif ($preservedAttentionCount -gt 0) {
+                    $outcome.Headline = Get-W360Text -Key 'Verify.TaskCompletedKeptAttention.Headline'
+                    $outcome.NextSteps = @()
+                }
                 else {
                     $outcome.Headline = Get-W360Text -Key 'Verify.TaskCompleted.Headline'
                     $outcome.NextSteps = @(Get-W360Text -Key 'Verify.Next.Done')
                 }
                 $outcome.Detail = & $joinDetail (Get-W360Text -Key 'Verify.TaskCompleted.Detail' -Arguments @($cleared.Count))
             }
+        }
+    }
+    # Other result states already lead to a fresh check; keep their next step focused and all anomalies in Detail.
+    if ($outcome.State -eq 'TaskCompleted' -and $coverageComplete -ne $false) {
+        if ($outcome.PreservedChangedCount -gt 0 -or $outcome.PreservedUnknownCount -gt 0) {
+            $outcome.NextSteps = @(Get-W360Text -Key 'Verify.Next.KeptUnconfirmed' -Arguments @($rescanButton, $helpButton))
+        }
+        elseif ($outcome.PreservedGoneCount -gt 0) {
+            $outcome.NextSteps = @(Get-W360Text -Key 'Verify.Next.KeptGone')
         }
     }
     return $outcome

@@ -2441,7 +2441,9 @@ function New-SelectorVerifyResultPage {
 
     # "Close" leads only when nothing more can be done now; otherwise checking the PC again leads.
     $closePrimary = ($state -ceq 'GlobalClean') -or ($state -ceq 'GlobalKeptOnly') -or
-        ($state -ceq 'TaskCompleted' -and (Get-W360PropertyValue -Object $Outcome -Name 'CoverageComplete') -ne $false)
+        ($state -ceq 'TaskCompleted' -and (Get-W360PropertyValue -Object $Outcome -Name 'CoverageComplete') -ne $false -and
+            (ConvertTo-W360Int64 (Get-W360PropertyValue -Object $Outcome -Name 'PreservedChangedCount')) -eq 0 -and
+            (ConvertTo-W360Int64 (Get-W360PropertyValue -Object $Outcome -Name 'PreservedUnknownCount')) -eq 0)
     $closeHandler = { Invoke-SelectorUiAction -SelectorAction { Close-SelectorApp } }
     $rescanHandler = { Invoke-SelectorUiAction -SelectorAction { Start-SelectorScan } }
     if ($closePrimary) {

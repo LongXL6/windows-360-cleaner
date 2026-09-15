@@ -7,6 +7,11 @@ This file records changes per release, newest first.
 
 ### 中文
 
+#### 2026-09-15 复核修正
+
+- 检查上次删除结果时，想保留的项目发生变化或无法确认是否还在，也会显示黄色提醒。顶部说明、下一步、窗口主按钮和 Agent 回复保持一致；选中项目已删除的事实仍会保留。
+- 同时出现保留项目不见了、发生变化、无法确认，以及新发现或检查不完整时，会分别说明，避免其中一种提醒盖过其他提醒。补充中英文摘要和窗口排版回归测试。
+
 这是第一个带版本号的版本，目前还没有正式发布（是否发布以 GitHub Releases 页面为准）。之前直接从 main 分支下载的 ZIP 没有版本号，可以把它们都看作“1.0.0 之前的版本”。
 
 括号里是这些功能在开发文档和测试里的名字，方便维护者对照。
@@ -71,6 +76,11 @@ This file records changes per release, newest first.
 - 失败、不确定、跳过、没做完和需要重启永远不会显示成成功；删除开始后不能取消，窗口不能关闭；你保留的内容不算失败；获取帮助的文字先脱敏、先预览，从不上传。
 
 ### English
+
+#### Review fixes on 2026-09-15
+
+- Verification now warns when an item the user wanted to keep changed or could not be confirmed present. The headline, next step, primary window button and agent summary agree, while selected items confirmed deleted remain completed.
+- Missing, changed and unconfirmed kept items are all explained even alongside new findings or incomplete checks. Added Chinese and English summary and window-layout regression coverage.
 
 This is the first versioned release, and it has not been published yet (the GitHub Releases page is the authority on whether it is). Earlier ZIP downloads taken directly from the main branch had no version number; treat them as "before 1.0.0".
 
