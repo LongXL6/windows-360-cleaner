@@ -1,18 +1,20 @@
-name: 使用求助 / Help with a scan
-description: 扫描、报告解读或验证问题；请只提供脱敏信息。
+name: 使用求助 / Help using the tool
+description: "用 AI Agent 或“开始检查”窗口时，检查电脑、删除结果或重启后检查上次删除的结果遇到问题；请只提供脱敏信息。 / Problems with an AI agent conversation or the Start-Check window: checking the PC, a deletion result or checking the last deletion. Share redacted information only."
 title: "[Help] "
 body:
   - type: markdown
     attributes:
       value: |
         先阅读 [新手指南](https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.md) / [English guide](https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.en.md)。
-        公开 Issue 所有人可见。不要上传原始 Scan JSON、用户名、私人路径、SID、密码或浏览器资料；原件留在本机，后续批准需要使用它。
-        Public issues are visible to everyone. Keep the original report locally and share only a redacted excerpt.
+        公开 Issue 所有人可见。用窗口时，最方便的做法是在检查结果、删除结果或出错页面点“获取帮助”，逐行检查问题信息、删掉不想公开的内容，再粘贴到下面。用 AI Agent 时，可以粘贴 Agent 用大白话告诉你的结果，但请删掉 `AGENT:` 开头的行、文件路径和用户名。自动隐藏隐私不能保证万无一失；这些文字只用于讨论，不能当作删除批准；本工具不会替你上传任何内容。
+        不要上传原始记录文件（`360-cleanup-*.json`）、用户名、私人路径、SID、密码或浏览器资料；原始记录留在你的电脑上即可。
+        Public issues are visible to everyone. With the window, the easiest way is to click "Get help" on the check result, deletion result or error page, review every line (automatic redaction can miss things), remove anything you do not want to publish, and paste it below. With an AI agent, you can paste the plain-words result the agent told you, but remove lines that start with `AGENT:`, file paths and user names. The text is for discussion only and is never an approval to delete. Keep the original `360-cleanup-*.json` records on your PC.
   - type: input
     id: environment
     attributes:
-      label: Windows 与工具版本 / Windows and package version
-      description: 写 Windows 10/11、下载日期或 commit；知道 PowerShell 版本也可补充。
+      label: 工具版本、Windows 版本和用法 / Tool version, Windows version and how you used it
+      description: "工具版本看窗口标题里的版本号，例如 v1.0.0；1.0.0 之前从 main 分支下载的包没有版本号，可以写下载日期。再写 Windows 10 或 11，以及用的是“开始检查”窗口还是哪个 AI Agent（例如 Codex、豆包）。“获取帮助”里的问题信息已经包含版本。 / The tool version is shown in the window title, for example v1.0.0 (downloads from before 1.0.0 have none, so give the download date). Add Windows 10 or 11, and whether you used the Start-Check window or which AI agent (for example Codex or Doubao). The text from \"Get help\" already contains the versions."
+      placeholder: "例如 / e.g. v1.0.0, Windows 11, 开始检查窗口 / Start-Check window"
     validations:
       required: true
   - type: dropdown
@@ -21,17 +23,29 @@ body:
       label: 卡在哪一步 / Step
       options:
         - 下载或解压 / Download or extract
-        - Scan
-        - 解读报告 / Read the report
-        - Remove
-        - Verify
+        - AI Agent 不能运行命令，或说完成了却没有结果 / The agent cannot run commands, or says it is done without a result
+        - 双击“开始检查”后窗口没有打开 / The window does not open
+        - 检查电脑 / Checking the PC
+        - 看懂“可以删除 / 不删除”或选择要删除的 / Understanding "can be deleted / won't delete" or choosing what to delete
+        - “确定要删除吗？”、Agent 的确认内容或 Windows 问是否允许 / The confirmation (window or agent) or the Windows permission prompt
+        - 删除结果 / Deletion result
+        - 重启后检查上次删除的结果 / Checking the last deletion after a restart
+        - 其他 / Other
     validations:
       required: true
+  - type: textarea
+    id: help-summary
+    attributes:
+      label: 已检查的问题信息 / Reviewed help text
+      description: "用窗口时：点“获取帮助”，逐行检查问题信息后复制粘贴到这里。用 Agent 时：粘贴 Agent 说的结果，删掉 AGENT: 开头的行和文件路径。窗口打不开时可以留空。 / With the window: click \"Get help\", review every line, then paste it here. With an agent: paste what the agent told you, without AGENT: lines and file paths. Leave it empty if the window does not open."
+      render: text
+    validations:
+      required: false
   - type: textarea
     id: behavior
     attributes:
       label: 预期与实际情况 / Expected and actual behavior
-      description: 描述操作步骤、错误文字或脱敏后的 Confidence/Kind/Name/Reason；如是节选请注明。
+      description: "你做了哪一步、希望看到什么、实际看到什么（例如页面标题、Agent 说的结论或错误文字）。只贴节选时请注明。 / What you did, what you expected, and what you saw (for example the page headline, the agent's conclusion or the error text). Say so if you paste only an excerpt."
     validations:
       required: true
   - type: checkboxes
@@ -39,5 +53,5 @@ body:
     attributes:
       label: 发布前检查 / Before submitting
       options:
-        - label: 我已检查隐私；没有附原始报告或未脱敏的个人信息。 / I checked for private data and did not attach the original report.
+        - label: "我已逐行检查隐私；没有附原始记录文件、AGENT: 开头的行或未脱敏的个人信息。 / I checked every line for private data and did not attach the original record files, AGENT: lines or unredacted personal information."
           required: true

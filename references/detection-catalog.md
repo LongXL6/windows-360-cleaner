@@ -7,6 +7,35 @@ Read this reference when reviewing a finding, adding a detector, or deciding whe
 - `Confirmed`: exact known path plus product metadata/digital-signature evidence, or persistence action whose executable is under a confirmed path. A filename or directory name alone is insufficient.
 - `ReviewOnly`: name match, offline-system path, unsigned component, system driver, or ambiguous toolbox component. Never automatically remove it.
 
+## Display grouping (ProductKey / 显示分组)
+
+Since 1.0.0 every finding carries a `ProductKey`. The guided window uses it only for display: to group scan results and the confirmation list by product, to show the product name and description in the item details (the verification details show the product name), and to add the product's impact sentence to some folder and file explanations. Grouping is display-only:
+
+- It never changes `Confidence`, `RemovalType`, `SelectionId`, the approval key, the Remove selection, or whether a row can be ticked. It never ticks or unticks anything by itself; a group header check box only toggles that group's selectable rows after the user clicks it.
+- The core script assigns the key from the rule that produced the finding. The UI does not guess a product from names. A finding without a key or with an unknown key (for example in a report from an earlier version) is shown as `Unattributed`.
+
+| `ProductKey` | Shown in Chinese as | Assigned to |
+|---|---|---|
+| `360Security` | 360 安全卫士 / 360 杀毒 | `%ProgramData%\360safe`, `%APPDATA%\360Safe`, and uninstall records whose name starts with 360安全卫士, 360 Total Security, or 360杀毒 |
+| `360InstallDir` | 360 公共安装目录 | `%ProgramFiles%\360`, `%ProgramFiles(x86)%\360`, `%ProgramData%\360` (may hold several products) |
+| `360SafeBrowser` | 360 安全浏览器 | `%APPDATA%\360se6\Application`, `%APPDATA%\360se6\User Data`, `%APPDATA%\360browser`, and 360安全浏览器/360se records |
+| `360ChromeBrowser` | 360 极速浏览器 | `%LOCALAPPDATA%\360Chrome\Chrome\Application` and `User Data`, and 360极速浏览器/360Chrome records |
+| `360ChromeXBrowser` | 360 极速浏览器 X | `%LOCALAPPDATA%\360ChromeX\Chrome\Application` and `User Data`, and 360极速浏览器X/360ChromeX records |
+| `360SoftMgr` | 360 软件管家 | `%APPDATA%\secoresdk\360se6`, roaming `%APPDATA%\SoftMgr*`, `%ProgramFiles%\softmgr`, and 360软件管家 records |
+| `WinToolBox360` | winToolBox 工具箱中的 360 组件 | winToolBox `Tools\SoftMgr*`, Qihu-signed root files, the linked `winToolBoxSrv.exe` updater and `WinToolBoxUpdateSrv`, plus the review-only bundle and sibling services |
+| `Duohui` | 360 画报 / 多绘屏保 | `%LOCALAPPDATA%\dhpingbao`, `%TEMP%\duohuipingbao`, `%TEMP%\huabao_tmp`, `%APPDATA%\360huabao`, the Duohui vendor uninstaller, the exact `duohuipingbao` record and its HKCU residue, and 360画报/多绘屏保 records |
+| `360GameAssistant` | 360 游戏助手 / 游戏大厅 | `%APPDATA%\360GameAssistant`, `%TEMP%\360gameassistantYyb`, and 360游戏大厅 records |
+| `360DriverMaster` | 360 驱动大师 | `%APPDATA%\360DrvMgrScrSaver` and 360驱动大师 records |
+| `GreenCore` | 360 GreenCore 组件 | `%APPDATA%\greencore`, `%APPDATA%\GreenCore7z` |
+| `360Temp` | 360 临时文件 | `%TEMP%\360UnPackTmp64` and the review-only `360greencore.cab` / `360se*.cab` packages |
+| `360Zip` | 360 压缩 | 360压缩 uninstall records |
+| `360Other` | 其他 360 产品 | 360桌面助手 and 360壁纸 uninstall records |
+| `Drivers` | 360 系统驱动 | review-only `360*.sys` drivers |
+| `OfflineWindows` | 其他 Windows 系统中的项目 | every finding from `-OfflineWindowsRoot` |
+| `Unattributed` | 未确定所属产品（证据不足，不猜测） | name-only review-only startup entries, tasks, and services; uninstall records matched by a 360 publisher whose product name is not in the list above; findings without a key |
+
+Confirmed startup entries, screen-saver settings, scheduled tasks, services, and processes inherit the key of the confirmed path they point into; if that path has no key they stay `Unattributed`. Groups with selectable rows are listed first, and `Unattributed` and `OfflineWindows` are always last.
+
 ## Confirmed product families
 
 Installed-product names and publishers commonly include:

@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Windows 360 Cleaner: scan first, remove after review</title>
-  <meta name="description" content="Open-source AI agent skill for Windows 10/11: audit 360/Qihoo components, separate Confirmed from ReviewOnly, require human approval, and verify with JSON.">
+  <title>Windows 360 Cleaner: check first, delete only what you confirm</title>
+  <meta name="description" content="Open-source AI agent skill for Windows 10/11: tell your agent &quot;check this PC for 360 software&quot;, and it checks first, tells you in plain words what it suggests deleting and what won't be deleted, and deletes only what you confirm. If your agent cannot run local commands, double-click Start-Check; every row in the window only answers whether it can be deleted.">
 
   <link rel="canonical" href="https://longxl6.github.io/windows-360-cleaner/en/">
   <link rel="alternate" hreflang="zh-Hans" href="https://longxl6.github.io/windows-360-cleaner/">
@@ -16,19 +16,19 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Windows 360 Cleaner">
   <meta property="og:locale" content="en_US">
-  <meta property="og:title" content="Windows 360 Cleaner: scan first, remove after review">
-  <meta property="og:description" content="Run a read-only audit, review exact evidence, approve deliberately, and verify the result with local JSON reports.">
+  <meta property="og:title" content="Windows 360 Cleaner: check first, delete only what you confirm">
+  <meta property="og:description" content="Say one sentence to your AI agent and it tells you in plain words whether each 360 product can be deleted, then deletes only what you confirm. No agent that can run commands? Double-click Start-Check. Check again after a restart.">
   <meta property="og:url" content="https://longxl6.github.io/windows-360-cleaner/en/">
   <meta property="og:image" content="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg">
   <meta property="og:image:width" content="1600">
   <meta property="og:image:height" content="640">
-  <meta property="og:image:alt" content="The Windows 360 Cleaner safety flow from scanning and human review to verification">
+  <meta property="og:image:alt" content="Illustration of the Windows 360 Cleaner flow from checking and item-by-item confirmation to checking again after a restart">
 
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Windows 360 Cleaner: scan first, remove after review">
-  <meta name="twitter:description" content="An open-source Windows 360/Qihoo cleanup skill: read-only scan, human approval, exact handling, and report-based verification.">
+  <meta name="twitter:title" content="Windows 360 Cleaner: check first, delete only what you confirm">
+  <meta name="twitter:description" content="An open-source AI agent skill for removing 360 software: check first, a plain answer for every item, deletion only after you confirm, and a check again after a restart.">
   <meta name="twitter:image" content="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg">
-  <meta name="twitter:image:alt" content="The Windows 360 Cleaner safety flow from scanning and human review to verification">
+  <meta name="twitter:image:alt" content="Illustration of the Windows 360 Cleaner flow from checking and item-by-item confirmation to checking again after a restart">
 
   <script type="application/ld+json">
   {
@@ -36,11 +36,13 @@
     "@type": "SoftwareSourceCode",
     "@id": "https://longxl6.github.io/windows-360-cleaner/en/#software",
     "name": "Windows 360 Cleaner Skill",
-    "description": "An open-source AI agent skill for auditing and precisely removing confirmed 360/Qihoo Windows software.",
+    "description": "An open-source AI agent skill for Windows 10/11 that checks for 360/Qihoo software, says in plain words what can be deleted, and precisely removes only what the user confirms; it also includes a local guided window.",
     "url": "https://longxl6.github.io/windows-360-cleaner/en/",
     "image": "https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg",
     "codeRepository": "https://github.com/LongXL6/windows-360-cleaner",
     "programmingLanguage": "PowerShell",
+    "runtimePlatform": "Windows PowerShell 5.1",
+    "version": "1.0.0",
     "license": "https://github.com/LongXL6/windows-360-cleaner/blob/main/LICENSE",
     "inLanguage": "en",
     "isAccessibleForFree": true
@@ -57,8 +59,10 @@
         <span>Windows 360 Cleaner</span>
       </a>
       <nav class="site-nav" aria-label="Primary navigation">
-        <a href="#first-run">First run</a>
-        <a href="#safety">Safety</a>
+        <a href="#agent">Use an AI agent</a>
+        <a href="#first-run">Double-click Start-Check</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#safety">Delete or not</a>
         <a href="#faq">FAQ</a>
         <a class="language-link" href="../" lang="zh-Hans" hreflang="zh-Hans">简体中文</a>
       </nav>
@@ -68,19 +72,25 @@
   <main id="main-content">
     <section class="hero shell" aria-labelledby="page-title">
       <div class="hero-copy">
-        <p class="context-line">Use it with an AI agent or follow the double-click guide yourself</p>
-        <h1 id="page-title">See the evidence before deciding what to remove</h1>
+        <p class="context-line">No commands needed: say one sentence to your AI agent, or download and double-click</p>
+        <h1 id="page-title">Delete 360 software, starting with a check of your PC</h1>
         <p class="hero-lede">
-          Windows 360 Cleaner supports rule-guided agent help and a no-agent,
-          double-click route. It scans locally, separates evidence-backed 360/Qihoo
-          targets from findings that still need judgment, and acts only after you
-          review and explicitly approve exact targets.
+          This is an open-source AI agent skill. Tell an agent that can run commands on your PC "check this PC for
+          360 software", and it checks first, then tells you in plain words whether each product (360 Total Security,
+          360 browsers, 360 Software Manager, the Duohui screen saver and more) “can be deleted” or “won't be deleted”.
+          It deletes only after you name the numbers and confirm. If your agent cannot run local commands, download and
+          extract the whole ZIP, then double-click Start-Check: the window says the same things and opens with nothing ticked.
         </p>
         <div class="hero-actions" aria-label="Get started">
-          <a class="button button-primary" href="https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip">Download repository ZIP</a>
+          <a class="button button-primary" href="https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip">Download ZIP</a>
+          <a class="button button-secondary" href="#agent">What to tell your agent</a>
           <a class="button button-secondary" href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.en.md">Read the beginner guide</a>
         </div>
-        <p class="local-note">This is the project introduction. Scans and reports run locally on your Windows PC.</p>
+        <p class="local-note">
+          Once versioned ZIP files are published, you can download them from the
+          <a href="https://github.com/LongXL6/windows-360-cleaner/releases">GitHub Releases page</a>.
+          This page is only an introduction; checking and deleting run on your own PC.
+        </p>
       </div>
 
       <figure class="hero-figure">
@@ -88,93 +98,238 @@
           src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg"
           width="1600"
           height="640"
-          alt="An AI agent follows four steps: scan, human review, exact cleanup, and verification"
+          alt="Illustration: checking on your PC, item-by-item confirmation, deleting only what you selected, keeping personal files, then checking again"
         >
         <figcaption>
-          <span>A scan is not approval</span>
-          <span>Removal is not verification</span>
+          <span>Checking only reads, never deletes</span>
+          <span>Restart after deleting, then check again</span>
         </figcaption>
       </figure>
     </section>
 
     <dl class="fact-strip shell" aria-label="Project facts">
       <div>
+        <dt>Version</dt>
+        <dd>1.0.0</dd>
+      </div>
+      <div>
         <dt>System</dt>
         <dd>Windows 10 / 11</dd>
       </div>
       <div>
+        <dt>How to use</dt>
+        <dd>AI agent skill with a local window</dd>
+      </div>
+      <div>
         <dt>Runtime</dt>
-        <dd>PowerShell 5.1+</dd>
+        <dd>Built-in PowerShell 5.1, nothing to install</dd>
       </div>
       <div>
-        <dt>License</dt>
-        <dd>MIT</dd>
-      </div>
-      <div>
-        <dt>Default</dt>
-        <dd>Scan first, never auto-remove</dd>
+        <dt>Before deleting</dt>
+        <dd>Your own confirmation</dd>
       </div>
     </dl>
 
-    <section class="section shell" id="first-run" aria-labelledby="first-run-title">
+    <section class="section shell" id="agent" aria-labelledby="agent-title">
       <div class="section-heading">
-        <p>Your first run</p>
-        <h2 id="first-run-title">Follow all four steps and review the report</h2>
+        <p>Use an AI agent (recommended)</p>
+        <h2 id="agent-title">Say one sentence, and the agent tells you what can go</h2>
+        <p class="section-intro">The agent follows the skill's SKILL.md to run the check, then uses the bundled Show-360Summary.ps1 to turn the result into plain words. It may suggest, but only you say whether to delete and which items.</p>
       </div>
 
       <ol class="step-list">
         <li>
           <span class="step-number" aria-hidden="true">1</span>
           <div>
-            <h3>Download and extract</h3>
-            <p>Download the ZIP from the official GitHub repository and extract the complete folder. Avoid modified copies from third-party download sites.</p>
+            <h3>Give the agent this skill</h3>
+            <p>Codex users copy the complete repository to %USERPROFILE%\.codex\skills\windows-360-cleaner. For other agents that can run local commands, send them the repository address and ask them to read SKILL.md completely first. If you are not sure, ask first: “Can you run PowerShell on this Windows PC?”</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">2</span>
           <div>
-            <h3>Run Scan first</h3>
-            <p>Double-click <code>scripts\Scan-360.cmd</code>. A read-only scan opens a selector with nothing checked by default.</p>
+            <h3>Say one sentence</h3>
+            <p>“Check this PC for 360 software, tell me in plain words what you suggest deleting and what won't be deleted, and delete only what I confirm.” Checking never deletes anything.</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">3</span>
           <div>
-            <h3>Review and select item by item</h3>
-            <p>Only green Confirmed rows are selectable. Yellow ReviewOnly rows are view-only, and unchecked targets stay preserved.</p>
+            <h3>It numbers the products and says what can go</h3>
+            <p>For example: “1. 360 Secure Browser - 1 can be deleted, 1 not. Do you still use 360 Secure Browser? If not, I suggest deleting it. 2. 360 Huabao / Duohui screen saver - Can be deleted (3), I suggest deleting it. 3. 360 temporary files - Won't delete: not sure it belongs to 360. Which ones should be deleted? Just reply with the numbers.” It never suggests deleting, or works around, anything marked “won't delete”.</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">4</span>
           <div>
-            <h3>Confirm again, then restart and Verify</h3>
-            <p>Remove selected shows a second warning and requests UAC. Removal is permanent. Restart Windows afterward, then run Verify.</p>
+            <h3>It deletes only after you confirm</h3>
+            <p>Reply with numbers, for example “delete 2”. It first shows you the confirmation text: what is deleted, what deleting does, what you did not select (this tool does not delete it), and that deleted items cannot be recovered and do not go to the Recycle Bin; when an uninstaller that came with 360 is included, it also warns that the uninstaller may remove unselected parts of the same product. It starts only after your explicit “yes, delete”; click “Yes” when Windows asks for permission. Numbers you do not name are kept, and “delete everything” only covers items that can be deleted.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">5</span>
+          <div>
+            <h3>Restart yourself, then let it check</h3>
+            <p>It tells you honestly what was deleted, what is left, and whether to restart; “not deleted” and “not sure” are never called finished. It never restarts your PC: save your work, restart yourself, then tell it “it has restarted”. In a new conversation, say “check the last deletion”.</p>
           </div>
         </li>
       </ol>
 
       <p class="guide-callout">
-        Need step-by-step instructions, agent prompts, and troubleshooting?
+        Agents that cannot run local commands, such as Doubao on the web, cannot reach your PC: ask them to guide you to the
+        Start-Check window below, and they can help you understand its text. See the
+        <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/doubao.md">Doubao guide</a> (Chinese, with an English prompt);
+        the full example conversation and prompts are in the
+        <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/README.en.md#use-it-with-an-ai-agent-recommended">README</a>.
+      </p>
+    </section>
+
+    <section class="section shell" id="first-run" aria-labelledby="first-run-title">
+      <div class="section-heading">
+        <p>If your agent cannot run local commands</p>
+        <h2 id="first-run-title">Double-click Start-Check: six steps, and you decide at every one</h2>
+      </div>
+
+      <ol class="step-list">
+        <li>
+          <span class="step-number" aria-hidden="true">1</span>
+          <div>
+            <h3>Download and extract everything</h3>
+            <p>Click “Download ZIP” above. Right-click the downloaded ZIP, choose “Extract All”, then open the extracted folder. Do not run anything from inside the ZIP, and avoid modified copies from unknown sites.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">2</span>
+          <div>
+            <h3>Double-click Start-Check</h3>
+            <p>Double-click <code>Start-Check.cmd</code> (<code>开始检查.cmd</code> is an identical copy with a Chinese name). Opening it only checks the PC and deletes nothing. The window shows only the current step and the elapsed time; it usually takes a minute or two. “Stop checking” stops it, and that result is not used.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">3</span>
+          <div>
+            <h3>Read the results and tick for yourself</h3>
+            <p>Results are grouped by product and nothing is ticked. The “Delete?” column has only two kinds of answers: “Can be deleted” is your decision; rows that say “Won't delete: reason” cannot be ticked. Click any row to see below what it is and what deleting it does. “Select all deletable” ticks only items that can be deleted and, for safety, only ever selects less, never more. If you do not want to delete anything, just click “Close”.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">4</span>
+          <div>
+            <h3>Confirm what will be deleted</h3>
+            <p>Click “Delete selected...”. If the selection needs changes (for example more than 64 items), the tool explains how to fix it first, and nothing has been deleted yet. The “Delete these items?” dialog states that deleted items cannot be recovered and do not go to the Recycle Bin, and that what you did not select is kept (if you ticked an uninstaller that came with 360, it warns separately that it may remove unticked parts of the same product). Close the 360 programs and back up bookmarks you need, then click the red “Delete” and click “Yes” when Windows asks for permission. When in doubt, click “Cancel”, the default button.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">5</span>
+          <div>
+            <h3>Read the result and restart yourself</h3>
+            <p>Once deleting starts it cannot be stopped, so let it finish. The result page gives a large headline such as “Deletion complete”, “One more step: restart the PC”, “Some items were not deleted”, or “Not sure everything was deleted”, and says what to do next; not deleted, uncertain, and restart-needed results never look like success. The tool never restarts the PC; save your work and restart it yourself.</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">6</span>
+          <div>
+            <h3>Check the last deletion after restarting</h3>
+            <p>Double-click Start-Check again and, under “Last deletion”, click “Check the last deletion”. Checking only reads information and never deletes anything. Items you kept are listed under “Kept by you” and do not count as a failed deletion.</p>
+          </div>
+        </li>
+      </ol>
+
+      <p class="guide-callout">
+        Need detailed, illustrated steps and troubleshooting?
         <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.en.md">Open the complete beginner guide</a>.
       </p>
+    </section>
+
+    <section class="section shell shots-section" id="screenshots" aria-labelledby="screenshots-title">
+      <div class="section-heading">
+        <p>Screenshots</p>
+        <h2 id="screenshots-title">What the Start-Check window looks like</h2>
+        <p class="section-intro">
+          All screenshots use sample data: nothing on a real PC was checked or deleted to make them, and the items on
+          your PC will differ. They show the Chinese interface; the window uses English when Windows is not set to a
+          Chinese display language. Click an image to open it at full size.
+        </p>
+      </div>
+
+      <div class="shot-grid">
+        <figure class="shot">
+          <a class="shot-link" href="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/03-scan-results.png">
+            <img
+              src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/03-scan-results.png"
+              width="1086"
+              height="713"
+              loading="lazy"
+              decoding="async"
+              alt="Screenshot with sample data: 2 products have items you can delete; the check result grouped by product with only the Select, Item and Delete? columns, with three Duohui screen saver items ticked and marked Will be deleted in red"
+            >
+          </a>
+          <figcaption><strong class="shot-tag">Screenshot with sample data</strong> Check result: grouped by product, and every row only answers “Delete?”. The three Duohui items are ticked here; the area below explains the selected row, the bottom line counts the items selected for deletion, and “Select all deletable” sits next to “Delete selected...”.</figcaption>
+        </figure>
+
+        <figure class="shot">
+          <a class="shot-link" href="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/04-confirm-delete.png">
+            <img
+              src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/04-confirm-delete.png"
+              width="886"
+              height="633"
+              loading="lazy"
+              decoding="async"
+              alt="Screenshot with sample data: the Delete these items? dialog lists three items to delete, what happens after deleting them and what is kept, says in red that deleted items cannot be recovered, and offers Cancel and a red Delete button"
+            >
+          </a>
+          <figcaption><strong class="shot-tag">Screenshot with sample data</strong> Confirmation: lists the items and what happens after deleting them, states that deleted items cannot be recovered (no Recycle Bin), and lists what is kept. The default button is “Cancel”. An agent shows you the same text in a conversation.</figcaption>
+        </figure>
+
+        <figure class="shot">
+          <a class="shot-link" href="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/05-cleanup-result.png">
+            <img
+              src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/05-cleanup-result.png"
+              width="1086"
+              height="713"
+              loading="lazy"
+              decoding="async"
+              alt="Screenshot with sample data: the Deletion complete page with a green headline, 3 deleted 0 not deleted 0 not sure, and what to do next"
+            >
+          </a>
+          <figcaption><strong class="shot-tag">Screenshot with sample data</strong> Deletion result: a large headline says whether the items were deleted and suggests restarting yourself when convenient, then clicking “Check the last deletion”. The statistics and the action log are under “Details”.</figcaption>
+        </figure>
+
+        <figure class="shot">
+          <a class="shot-link" href="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/07-verify-result.png">
+            <img
+              src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/07-verify-result.png"
+              width="1086"
+              height="713"
+              loading="lazy"
+              decoding="async"
+              alt="Screenshot with sample data: checking the last deletion says everything selected last time is gone, shows three Duohui items deleted and the 360 Secure Browser program files under Kept by you, still there"
+            >
+          </a>
+          <figcaption><strong class="shot-tag">Screenshot with sample data</strong> Checking the last deletion: the three Duohui items are deleted; the 360 Secure Browser program files were kept by you and are still there, which is normal and not a failure.</figcaption>
+        </figure>
+      </div>
     </section>
 
     <section class="section section-ink" id="safety" aria-labelledby="safety-title">
       <div class="shell ink-grid">
         <div class="section-heading section-heading-light">
-          <p>Read the scan correctly</p>
-          <h2 id="safety-title">Two labels define two different action boundaries</h2>
-          <p class="section-intro">Classification comes from local paths, product records, tasks, services, signatures, or file evidence. It is not a broad name match.</p>
+          <p>Read the “Delete?” answer</p>
+          <h2 id="safety-title">Every item has one of two answers: can be deleted, or won't delete</h2>
+          <p class="section-intro">The window and the agent use the same words. The answer comes from local locations, installed-program records, timer tasks, background services, digital signatures, or file contents. A name that contains “360” is not enough.</p>
         </div>
 
         <dl class="signal-list">
           <div class="signal signal-confirmed">
-            <dt>Confirmed</dt>
-            <dd>The evidence meets the project's rules. It is still not removed automatically; you must review and explicitly approve the exact target.</dd>
+            <dt>Can be deleted</dt>
+            <dd>Something 360 left behind that can be deleted. Tick it in the window, or name its product's number in a conversation (a number covers the items of that product that can be deleted, only ever fewer for safety, and the confirmation text lists them; to delete only some of them, use the Start-Check window). The window does not decide for you; an agent may say “I suggest deleting it” and asks first about software you may still use. Only what you confirm is deleted, and everything else is kept.</dd>
           </div>
           <div class="signal signal-review">
-            <dt>ReviewOnly</dt>
-            <dd>The evidence is incomplete, ambiguous, driver-related, or from an offline Windows installation. The project reports it but does not remove it automatically.</dd>
+            <dt>Won't delete: reason</dt>
+            <dd>
+              For example, the name or location looks like 360 but it is not certain that it belongs to 360. These items only show the reason, cannot be ticked, and an agent never suggests deleting them or works around them:
+              <span class="signal-states">Won't delete: not sure it belongs to 360 · Won't delete: bookmarks and history · Won't delete: in another Windows installation · Won't delete: system driver · Won't delete: this is other software · Won't delete: details incomplete · Won't delete: uninstall it normally first</span>
+            </dd>
           </div>
         </dl>
       </div>
@@ -182,25 +337,25 @@
 
     <section class="section shell preserve-section" aria-labelledby="preserve-title">
       <div class="section-heading">
-        <p>Preserved by default</p>
+        <p>Never deleted</p>
         <h2 id="preserve-title">Normal files and personal data are not targets because of a name</h2>
       </div>
       <div class="preserve-grid">
         <div>
           <h3>Ordinary numeric files</h3>
-          <p>Photos, game assets, models, hashes, and other content whose only signal is “360” in a name are not product evidence.</p>
+          <p>Photos, game assets, models, hashes, and other content whose only signal is “360” in a name are not evidence of 360 software.</p>
         </div>
         <div>
           <h3>Windows and drivers</h3>
-          <p>Built-in screen savers, GPU and network drivers, Driver Genius, and unrelated applications are not broadly removed by keyword.</p>
+          <p>Built-in screen savers, GPU and network drivers, Driver Genius, and other normal software are not removed by keyword. 360 system drivers are only listed and never deleted.</p>
         </div>
         <div>
-          <h3>Browser profiles</h3>
-          <p>Bookmarks, history, and sessions stay by default. Profile removal needs a backup, a separate scan option, and explicit approval.</p>
+          <h3>Browser personal data</h3>
+          <p>A browser's program files and its personal data are separate items. Bookmarks, history, and other personal data show “Won't delete: bookmarks and history”, cannot be ticked in the Start-Check window, and are never included by an agent.</p>
         </div>
         <div>
           <h3>Other Windows installations</h3>
-          <p>A Windows installation on another mounted drive is scan-and-report only. This project provides no cross-system removal mode.</p>
+          <p>A Windows installation on another drive is only checked and listed. This project provides no cross-system deletion.</p>
         </div>
       </div>
     </section>
@@ -208,16 +363,16 @@
     <section class="section shell privacy-section" aria-labelledby="privacy-title">
       <div class="privacy-rule" aria-hidden="true"></div>
       <div>
-        <p class="section-label">Privacy and reports</p>
-        <h2 id="privacy-title">Results stay local; inspect reports before sharing</h2>
+        <p class="section-label">Privacy and help</p>
+        <h2 id="privacy-title">Results stay on your PC; check the text before asking for help</h2>
       </div>
       <div class="privacy-copy">
-        <p>This introduction contains no analytics, advertising, or tracking scripts. Scan, Remove, and Verify run in local PowerShell and write results to a local JSON report.</p>
+        <p>This introduction contains no analytics, advertising, or tracking scripts. Checking, deleting, and the check after a restart run on your PC, and the tool never uploads anything. Record files are JSON files saved to your Desktop by default, named like <code>360-cleanup-scan-….json</code>; you do not need to open them, because the window and the agent explain them in plain words.</p>
         <p>
-          The computer and user fields are blank by default, but approval context,
-          user SIDs, and finding paths can still expose identity. Keep the original
-          local Scan report unchanged for Remove; create a separate redacted copy
-          for public help, and never use that edited copy for Remove.
+          To ask for help, click “Get help” on a result page of the window. It creates separate problem information with your user name,
+          computer name, SIDs, e-mail addresses, and private paths hidden as far as possible, though something may be missed. You can edit it; check every line before sharing.
+          The original records are not changed, and the text can never be used to delete anything. “Open the help web page”
+          only opens a fixed help page in your browser; it does not send anything for you.
         </p>
       </div>
     </section>
@@ -230,33 +385,48 @@
       <div class="faq-list">
         <article>
           <h3>Is this a one-click cleaner?</h3>
-          <p>No. It is an AI agent skill package with double-click fallback scripts. The workflow always starts with a scan and human review before any removal decision.</p>
-        </article>
-        <article>
-          <h3>What software or problems can it check?</h3>
-          <p>
-            Current rules cover evidence-backed 360 Security Guard, 360 Browser
-            uninstall leftovers, 360 Huabao/Duohui screen savers, and related updater
-            tasks. They do not cover every version or variant; see the
-            <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/detection-catalog.md">detection catalog</a>
-            for the maintained scope.
-          </p>
-        </article>
-        <article>
-          <h3>Does Scan remove target software?</h3>
-          <p>No. Scan does not require administrator access and does not remove target software. It creates a new local JSON report for review.</p>
-        </article>
-        <article>
-          <h3>What should I do with ReviewOnly?</h3>
-          <p>Do not force-delete it. Keep the target, inspect its signature, version, and path, then open a GitHub Issue with redacted evidence if it remains unclear.</p>
-        </article>
-        <article>
-          <h3>Does a successful Remove prove everything is gone?</h3>
-          <p>Not by itself. The Remove action report and the post-restart Verify report are separate evidence stages. Check Verify for remaining Confirmed findings.</p>
+          <p>No. It checks the PC, tells you for each item whether it can be deleted, and deletes only what you confirm yourself. The window opens with nothing ticked, and “Select all deletable” ticks items only when you click it; an agent may suggest, but deletes only the numbers you name.</p>
         </article>
         <article>
           <h3>Do I need an AI agent?</h3>
-          <p>No. Download the ZIP and follow the beginner guide to run Scan, review the report, and decide whether to continue with Remove and Verify.</p>
+          <p>
+            Not necessarily. An agent that can run commands on your PC (for example Codex) is recommended: it follows
+            <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/SKILL.md">SKILL.md</a>, checks, and tells you in plain words what can be deleted.
+            If your agent cannot reach your PC (for example Doubao on the web), or you do not use one, double-click Start-Check; it says exactly the same things.
+            See the <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/doubao.md">Doubao guide</a> (Chinese, with an English prompt).
+          </p>
+        </article>
+        <article>
+          <h3>The agent says “I suggest deleting it”. Do I have to?</h3>
+          <p>No. A suggestion is only a suggestion: only the numbers you name are deleted, and anything you do not name is kept. Before deleting, the agent must show you the confirmation text and wait for your explicit “yes, delete”. If it says it is done but cannot show a real check result, do not believe it.</p>
+        </article>
+        <article>
+          <h3>Do I need to install anything or be an administrator?</h3>
+          <p>Nothing to install: Windows 10/11 already includes Windows PowerShell 5.1. Checking does not need administrator rights; Windows asks for permission only when you confirm a deletion.</p>
+        </article>
+        <article>
+          <h3>Which software can it check?</h3>
+          <p>
+            360 Total Security / 360 Antivirus, 360 Secure Browser and 360 Speed Browser, 360 Software Manager, 360 Huabao / the Duohui screen saver,
+            360 program files inside winToolBox, plus related programs that run at startup, background services, and tasks that run on a timer. It does not cover every version; see the
+            <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/detection-catalog.md">detection catalog</a> for the maintained scope.
+          </p>
+        </article>
+        <article>
+          <h3>I only deleted some items. Will the next check report a failure?</h3>
+          <p>No. “Check the last deletion” separates “Not deleted”, “Could not be confirmed or not fully checked”, “Newly found or changed”, “Kept by you, but gone”, “Kept by you”, and “Deleted”. Items you kept that are still there are normal, not failures. Checking never deletes anything; to handle new items, check the PC again and decide again.</p>
+        </article>
+        <article>
+          <h3>What if I clicked “No” when Windows asked for permission, or the result says “Not sure everything was deleted”?</h3>
+          <p>If you click “No”, nothing is deleted, and the window's result page says “Nothing was deleted”. “Not sure everything was deleted” means the outcome could not be confirmed, so do not treat it as done: save your work, restart yourself, and check again (click “Check the last deletion” in the window, or tell the agent “it has restarted”). If it still cannot be confirmed, click “Get help”.</p>
+        </article>
+        <article>
+          <h3>Does it restart the PC, run at startup, or upload data?</h3>
+          <p>No. Neither the tool nor the agent restarts the PC for you, and the tool never runs at startup, never stays in the background, and never uploads anything. When a restart is needed, you are only told to do it yourself.</p>
+        </article>
+        <article>
+          <h3>How do I ask for help without exposing private data?</h3>
+          <p>Click “Get help”, check every line, copy or save it, and paste it into a <a href="https://github.com/LongXL6/windows-360-cleaner/issues">GitHub Issue</a>. Do not post the original record files publicly, and do not attach screenshots you have not checked.</p>
         </article>
       </div>
     </section>
@@ -268,12 +438,12 @@
       </div>
       <div class="open-source-copy">
         <p>
-          The project is open source under the MIT License. For uncertain findings,
-          prefer a public Issue containing only redacted paths, versions, and
-          digital-signature details.
+          The project is open source under the MIT License; the current version is 1.0.0. For items you cannot judge,
+          click “Get help” and check the text first, then open a public Issue.
         </p>
         <div class="text-links">
           <a href="https://github.com/LongXL6/windows-360-cleaner">View the GitHub repository</a>
+          <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/CHANGELOG.md">Read the changelog</a>
           <a href="https://github.com/LongXL6/windows-360-cleaner/issues">Open or browse Issues</a>
           <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/LICENSE">Read the MIT License</a>
         </div>
@@ -283,8 +453,8 @@
 
   <footer class="site-footer">
     <div class="shell footer-inner">
-      <p>Windows 360 Cleaner · Open-source AI agent skill</p>
-      <p>Scan, approval, removal, and verification are four separate steps.</p>
+      <p>Windows 360 Cleaner v1.0.0 · Open-source AI agent skill with a local window</p>
+      <p>Checking, confirming, deleting, and checking again are four separate steps.</p>
     </div>
   </footer>
 </body>

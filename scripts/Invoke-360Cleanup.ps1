@@ -30,6 +30,12 @@ param(
 
     [string]$SelectedFindingIds,
 
+    [string]$PreviousRemoveReport,
+
+    [switch]$EmitProgress,
+
+    [string]$ElevatedProgressPath,
+
     [switch]$InternalElevatedChild,
 
     [switch]$InternalTestLibraryOnly
@@ -62,6 +68,120 @@ $script:KnownFolders = [ordered]@{
 $script:CleanupRuntimeProvider = $null
 $script:CleanupRuntimeProviderContext = $null
 $script:CurrentUserRegistryRoot = 'HKCU:'
+$script:ToolVersion = '1.0.0'
+$script:ScanIssues = New-Object System.Collections.ArrayList
+$script:ProgressToStdout = $false
+$script:ProgressStream = $null
+
+function ConvertTo-360CleanupProgressDetail {
+    param([string]$Detail)
+
+    if ([string]::IsNullOrEmpty($Detail)) { return '' }
+    $text = ($Detail -replace '[\r\n|]+', ' ').Trim()
+    if ($text.Length -gt 300) { $text = $text.Substring(0, 300) }
+    return $text
+}
+
+function Write-360CleanupProgress {
+    param(
+        [string]$Phase,
+        [string]$Detail = ''
+    )
+
+    # Progress is advisory UI output only. It must never change or interrupt the cleanup result.
+    if (-not $script:ProgressToStdout -and $null -eq $script:ProgressStream) { return }
+    $safeDetail = ConvertTo-360CleanupProgressDetail $Detail
+    if ($script:ProgressToStdout) {
+        try {
+            [Console]::Out.WriteLine(('W360-PROGRESS|{0}|{1}' -f $Phase, $safeDetail))
+            [Console]::Out.Flush()
+        }
+        catch {}
+    }
+    if ($null -ne $script:ProgressStream) {
+        try {
+            $line = ('{0}|{1}|{2}' -f [DateTime]::UtcNow.ToString('o'), $Phase, $safeDetail) + "`n"
+            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($line)
+            $script:ProgressStream.Write($bytes, 0, $bytes.Length)
+            $script:ProgressStream.Flush()
+        }
+        catch {}
+    }
+}
+
+function Test-360CleanupProgressPathFormat {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        if (-not [IO.Path]::IsPathRooted($Path) -or $Path.StartsWith('\\')) { return $false }
+        $full = [IO.Path]::GetFullPath($Path)
+    }
+    catch { return $false }
+    return ([IO.Path]::GetFileName($full)) -cmatch '^windows-360-cleaner-progress-[0-9a-f]{32}\.log$'
+}
+
+function Open-360CleanupProgressFile {
+    param([string]$Path)
+
+    if (-not (Test-360CleanupProgressPathFormat $Path)) { return $null }
+    try {
+        $full = [IO.Path]::GetFullPath($Path)
+        $parent = [IO.Path]::GetDirectoryName($full)
+        $parentItem = Get-Item -LiteralPath $parent -Force -ErrorAction Stop
+        if (-not [bool]$parentItem.PSIsContainer -or
+            ([IO.FileAttributes]$parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            return $null
+        }
+        # CreateNew never follows or replaces an existing name, so a pre-created file or link is rejected.
+        return New-Object IO.FileStream($full, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write,
+            ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+    }
+    catch { return $null }
+}
+
+function Close-360CleanupProgressFile {
+    if ($null -ne $script:ProgressStream) {
+        try { $script:ProgressStream.Dispose() }
+        catch {}
+        $script:ProgressStream = $null
+    }
+}
+
+function Reset-360ScanIssues {
+    $script:ScanIssues = New-Object System.Collections.ArrayList
+}
+
+function Add-360ScanIssue {
+    param(
+        [string]$Area,
+        [string]$Target = '',
+        [string]$Detail = ''
+    )
+
+    $text = if ($Detail) { ($Detail -replace '[\r\n]+', ' ').Trim() } else { '' }
+    if ($text.Length -gt 500) { $text = $text.Substring(0, 500) }
+    foreach ($existing in @($script:ScanIssues)) {
+        if ([string]$existing.Area -eq $Area -and [string]$existing.Target -eq [string]$Target) { return }
+    }
+    [void]$script:ScanIssues.Add([pscustomobject]@{
+        Area   = $Area
+        Target = [string]$Target
+        Detail = $text
+    })
+}
+
+function Get-360ScanCoverage {
+    param([object[]]$AdditionalIssues = @())
+
+    $issues = New-Object System.Collections.ArrayList
+    foreach ($issue in @($script:ScanIssues)) { [void]$issues.Add($issue) }
+    foreach ($issue in @($AdditionalIssues)) { if ($null -ne $issue) { [void]$issues.Add($issue) } }
+    return [pscustomobject]@{
+        Complete = ($issues.Count -eq 0)
+        Issues   = @($issues)
+    }
+}
 
 function Set-360CleanupRuntimeProvider {
     param(
@@ -216,13 +336,47 @@ function Stop-360CleanupProcess {
 function Start-360CleanupElevatedProcess {
     param(
         [string]$FilePath,
-        [string]$ArgumentLine
+        [string]$ArgumentLine,
+        [bool]$HideWindow = $false
     )
 
-    return Invoke-360CleanupRuntimeProvider -Name 'StartElevatedProcess' -ArgumentList @($FilePath, $ArgumentLine) -Default {
-        param($Executable, $Arguments)
-        Start-Process -FilePath $Executable -Verb RunAs -ArgumentList $Arguments -Wait -PassThru
+    # The guided UI shows progress from the elevated worker's progress file instead of a console window.
+    $providerArguments = if ($HideWindow) { @($FilePath, $ArgumentLine, $true) } else { @($FilePath, $ArgumentLine) }
+    return Invoke-360CleanupRuntimeProvider -Name 'StartElevatedProcess' -ArgumentList $providerArguments -Default {
+        param($Executable, $Arguments, $Hidden)
+
+        # Process.Start keeps the inner Win32Exception (1223 = the user declined the UAC prompt).
+        # Start-Process on Windows PowerShell 5.1 replaces it with a message-only exception.
+        $startInfo = New-Object Diagnostics.ProcessStartInfo
+        $startInfo.FileName = [string]$Executable
+        $startInfo.Arguments = [string]$Arguments
+        $startInfo.UseShellExecute = $true
+        $startInfo.Verb = 'runas'
+        if ([bool]$Hidden) { $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden }
+        $elevatedProcess = [Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $elevatedProcess) { throw 'The elevated cleanup process did not start.' }
+        $elevatedProcess.WaitForExit()
+        return $elevatedProcess
     }
+}
+
+function Test-360CleanupElevationCancelled {
+    param([object]$ErrorObject)
+
+    $exception = $ErrorObject
+    try {
+        if ($null -ne $ErrorObject -and $null -ne $ErrorObject.Exception) { $exception = $ErrorObject.Exception }
+    }
+    catch {}
+    while ($null -ne $exception) {
+        if ($exception -is [ComponentModel.Win32Exception] -and $exception.NativeErrorCode -eq 1223) { return $true }
+        try {
+            if ([int]$exception.HResult -eq [int]0x800704C7) { return $true }
+        }
+        catch {}
+        $exception = $exception.InnerException
+    }
+    return $false
 }
 
 function Start-360CleanupVendorUninstaller {
@@ -1015,7 +1169,8 @@ function New-ElevatedCleanupArgumentLine {
         [bool]$IncludeBrowserProfiles = $false,
         [bool]$AllowExplorerRestart = $false,
         [bool]$ForceLockedTargets = $false,
-        [bool]$IncludeIdentityInReport = $false
+        [bool]$IncludeIdentityInReport = $false,
+        [string]$ElevatedProgressPath = ''
     )
 
     if ($ApprovedReportHash -notmatch '^[0-9a-fA-F]{64}$') {
@@ -1045,6 +1200,13 @@ function New-ElevatedCleanupArgumentLine {
     if ($AllowExplorerRestart) { $argumentParts += '-AllowExplorerRestart' }
     if ($ForceLockedTargets) { $argumentParts += '-ForceLockedTargets' }
     if ($IncludeIdentityInReport) { $argumentParts += '-IncludeIdentityInReport' }
+    if (-not [string]::IsNullOrWhiteSpace($ElevatedProgressPath)) {
+        if (-not (Test-360CleanupProgressPathFormat $ElevatedProgressPath)) {
+            throw 'ElevatedProgressPath does not match the progress-file contract.'
+        }
+        $argumentParts += @('-ElevatedProgressPath',
+            (ConvertTo-CleanupQuotedArgument ([IO.Path]::GetFullPath($ElevatedProgressPath))))
+    }
     return $argumentParts -join ' '
 }
 
@@ -1226,16 +1388,38 @@ function Test-DirectoryHas360File {
 
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
     $checked = 0
+    $enumerationErrors = $null
+    $limitReached = $false
     try {
-        foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Force -Recurse -ErrorAction SilentlyContinue)) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Force -Recurse -ErrorAction SilentlyContinue -ErrorVariable enumerationErrors)) {
             if ($file.Extension -notmatch '(?i)^\.(exe|dll|scr|sys)$') { continue }
             $checked++
             if (Test-Is360File $file.FullName) { return $true }
-            if ($checked -ge $MaximumFiles) { break }
+            if ($checked -ge $MaximumFiles) { $limitReached = $true; break }
         }
     }
-    catch {}
+    catch { $enumerationErrors = @($_) }
+    if (@($enumerationErrors).Count -gt 0) {
+        Add-360ScanIssue -Area 'ProductEvidence' -Target $Path `
+            -Detail ('Some files or folders could not be read while looking for product evidence. ' + [string](@($enumerationErrors)[0]))
+    }
+    elseif ($limitReached) {
+        Add-360ScanIssue -Area 'ProductEvidence' -Target $Path `
+            -Detail ("Evidence search stopped after $MaximumFiles executable files without a match.")
+    }
     return $false
+}
+
+function Add-360EvidenceEnumerationIssue {
+    param(
+        [string]$Path,
+        [object[]]$Errors
+    )
+
+    if (@($Errors | Where-Object { $null -ne $_ }).Count -gt 0) {
+        Add-360ScanIssue -Area 'ProductEvidence' -Target $Path `
+            -Detail ('Some files or folders could not be read while looking for product evidence. ' + [string](@($Errors)[0]))
+    }
 }
 
 function Test-DuohuiEvidence {
@@ -1247,37 +1431,48 @@ function Test-DuohuiEvidence {
         'qcnethelp64.dll', 'xhqcnethelp64.dll'
     )
     $markerHits = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
-    foreach ($item in @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue)) {
+    $enumerationErrors = $null
+    foreach ($item in @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue -ErrorVariable enumerationErrors)) {
         if ($markers -contains $item.Name) { [void]$markerHits.Add($item.Name) }
         if (-not $item.PSIsContainer -and $item.Name -match '(?i)^(duohuipingbao|huabaosetup)\.exe$' -and
             (Test-IsDuohuiFile $item.FullName)) { return $true }
     }
-    return $markerHits.Count -ge 2
+    if ($markerHits.Count -ge 2) { return $true }
+    Add-360EvidenceEnumerationIssue -Path $Path -Errors @($enumerationErrors)
+    return $false
 }
 
 function Test-SoftMgrEvidence {
     param([string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
-    $executables = @(Get-ChildItem -LiteralPath $Path -Filter 'softmgrsvr.exe' -File -Recurse -ErrorAction SilentlyContinue)
+    $enumerationErrors = $null
+    $executables = @(Get-ChildItem -LiteralPath $Path -Filter 'softmgrsvr.exe' -File -Recurse -ErrorAction SilentlyContinue -ErrorVariable enumerationErrors)
     foreach ($file in $executables) {
         if (Test-Is360File $file.FullName) { return $true }
     }
 
+    $allErrors = New-Object System.Collections.ArrayList
+    foreach ($errorRecord in @($enumerationErrors)) { [void]$allErrors.Add($errorRecord) }
     foreach ($name in @('360Base.dll', '360Conf.dll', '360NetBase.dll', '360Util.dll')) {
-        foreach ($file in @(Get-ChildItem -LiteralPath $Path -Filter $name -File -Recurse -ErrorAction SilentlyContinue)) {
+        $markerErrors = $null
+        foreach ($file in @(Get-ChildItem -LiteralPath $Path -Filter $name -File -Recurse -ErrorAction SilentlyContinue -ErrorVariable markerErrors)) {
             if (Test-Is360File $file.FullName) { return $true }
         }
+        foreach ($errorRecord in @($markerErrors)) { [void]$allErrors.Add($errorRecord) }
     }
+    Add-360EvidenceEnumerationIssue -Path $Path -Errors @($allErrors)
     return $false
 }
 
 function Test-GreenCoreEvidence {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
-    foreach ($file in @(Get-ChildItem -LiteralPath $Path -Filter '360greencore.exe' -File -Recurse -ErrorAction SilentlyContinue)) {
+    $enumerationErrors = $null
+    foreach ($file in @(Get-ChildItem -LiteralPath $Path -Filter '360greencore.exe' -File -Recurse -ErrorAction SilentlyContinue -ErrorVariable enumerationErrors)) {
         if (Test-Is360File $file.FullName) { return $true }
     }
+    Add-360EvidenceEnumerationIssue -Path $Path -Errors @($enumerationErrors)
     return $false
 }
 
@@ -1293,7 +1488,8 @@ function New-Finding {
         [string]$RemovalType = 'None',
         [string]$ValueName = '',
         [string]$IdentityFingerprint = '',
-        [bool]$Offline = $false
+        [bool]$Offline = $false,
+        [string]$ProductKey = 'Unattributed'
     )
 
     [pscustomobject]@{
@@ -1306,7 +1502,56 @@ function New-Finding {
         ValueName   = $ValueName
         IdentityFingerprint = $IdentityFingerprint
         Offline     = $Offline
+        ProductKey  = $(if ([string]::IsNullOrWhiteSpace($ProductKey)) { 'Unattributed' } else { $ProductKey })
     }
+}
+
+function Get-360InstalledProductKey {
+    param(
+        [string]$DisplayName,
+        [bool]$IsExactDuohuiRecord = $false
+    )
+
+    # ProductKey is display grouping only. It never participates in approval or selection identity.
+    if ($IsExactDuohuiRecord) { return 'Duohui' }
+    $name = [string]$DisplayName
+    if ($name -match '(?i)^(360安全卫士|360 Total Security|360杀毒)') { return '360Security' }
+    if ($name -match '(?i)^(360极速浏览器X|360ChromeX)') { return '360ChromeXBrowser' }
+    if ($name -match '(?i)^(360极速浏览器|360Chrome)') { return '360ChromeBrowser' }
+    if ($name -match '(?i)^(360安全浏览器|360se)') { return '360SafeBrowser' }
+    if ($name -match '(?i)^360软件管家') { return '360SoftMgr' }
+    if ($name -match '(?i)^360压缩') { return '360Zip' }
+    if ($name -match '(?i)^360驱动大师') { return '360DriverMaster' }
+    if ($name -match '(?i)^360游戏大厅') { return '360GameAssistant' }
+    if ($name -match '(?i)^(360画报|多绘屏保|duohuipingbao)') { return 'Duohui' }
+    if ($name -match '(?i)^(360桌面助手|360壁纸)') { return '360Other' }
+    return 'Unattributed'
+}
+
+function Get-360ConfirmedPathProductKeys {
+    param([object[]]$Findings)
+
+    $map = @{}
+    foreach ($finding in @($Findings | Where-Object { $_.Confidence -eq 'Confirmed' -and $_.RemovalType -eq 'Path' })) {
+        $key = [string]$finding.Target
+        if (-not [string]::IsNullOrWhiteSpace($key) -and -not $map.ContainsKey($key)) {
+            $map[$key] = [string](Get-PropertyValue $finding 'ProductKey')
+        }
+    }
+    return $map
+}
+
+function Get-360ProductKeyForRoot {
+    param(
+        [hashtable]$Map,
+        [string]$Root
+    )
+
+    if ($null -ne $Map -and -not [string]::IsNullOrWhiteSpace($Root) -and $Map.ContainsKey($Root)) {
+        $value = [string]$Map[$Root]
+        if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    }
+    return 'Unattributed'
 }
 
 function Add-Finding {
@@ -1334,6 +1579,9 @@ function Get-360Findings {
         [bool]$IncludeProfiles = $false
     )
 
+    Reset-360ScanIssues
+    Write-360CleanupProgress 'ScanStart'
+    Write-360CleanupProgress 'ScanProductFolders'
     $findings = New-Object System.Collections.ArrayList
     $localAppData = $script:KnownFolders.LocalAppData
     $roamingAppData = $script:KnownFolders.RoamingAppData
@@ -1352,35 +1600,36 @@ function Get-360Findings {
     }
 
     $exactPaths = @()
-    if ($programFiles) { $exactPaths += @{ Name = '360 Program Files'; Path = (Join-Path $programFiles '360'); Confirm = 'Product'; Reason = 'Exact vendor product directory with local 360/Qihoo file evidence.' } }
-    if ($programFilesX86) { $exactPaths += @{ Name = '360 Program Files (x86)'; Path = (Join-Path $programFilesX86 '360'); Confirm = 'Product'; Reason = 'Exact vendor product directory with local 360/Qihoo file evidence.' } }
+    if ($programFiles) { $exactPaths += @{ Name = '360 Program Files'; Path = (Join-Path $programFiles '360'); Confirm = 'Product'; Product = '360InstallDir'; Reason = 'Exact vendor product directory with local 360/Qihoo file evidence.' } }
+    if ($programFilesX86) { $exactPaths += @{ Name = '360 Program Files (x86)'; Path = (Join-Path $programFilesX86 '360'); Confirm = 'Product'; Product = '360InstallDir'; Reason = 'Exact vendor product directory with local 360/Qihoo file evidence.' } }
     if ($programData) {
-        $exactPaths += @{ Name = '360 ProgramData'; Path = (Join-Path $programData '360'); Confirm = 'MachineData'; Reason = 'Exact vendor data directory paired with local 360/Qihoo file evidence.' }
-        $exactPaths += @{ Name = '360Safe ProgramData'; Path = (Join-Path $programData '360safe'); Confirm = 'MachineData'; Reason = 'Exact 360Safe data directory paired with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360 ProgramData'; Path = (Join-Path $programData '360'); Confirm = 'MachineData'; Product = '360InstallDir'; Reason = 'Exact vendor data directory paired with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360Safe ProgramData'; Path = (Join-Path $programData '360safe'); Confirm = 'MachineData'; Product = '360Security'; Reason = 'Exact 360Safe data directory paired with local 360/Qihoo file evidence.' }
     }
     if ($localAppData) {
-        $exactPaths += @{ Name = '360Chrome browser application'; Path = (Join-Path $localAppData '360Chrome\Chrome\Application'); Confirm = 'Product'; Reason = 'Exact 360Chrome Application directory with local 360/Qihoo file evidence.' }
-        $exactPaths += @{ Name = '360Chrome browser profile'; Path = (Join-Path $localAppData '360Chrome\Chrome\User Data'); Confirm = 'BrowserProfile'; Reason = '360Chrome User Data can contain bookmarks, history, saved sessions, and other user data.' }
-        $exactPaths += @{ Name = '360ChromeX browser application'; Path = (Join-Path $localAppData '360ChromeX\Chrome\Application'); Confirm = 'Product'; Reason = 'Exact 360ChromeX Application directory with local 360/Qihoo file evidence.' }
-        $exactPaths += @{ Name = '360ChromeX browser profile'; Path = (Join-Path $localAppData '360ChromeX\Chrome\User Data'); Confirm = 'BrowserProfile'; Reason = '360ChromeX User Data can contain bookmarks, history, saved sessions, and other user data.' }
-        $exactPaths += @{ Name = 'Duohui screen saver'; Path = (Join-Path $localAppData 'dhpingbao'); Confirm = 'Duohui'; Reason = 'Known duohuipingbao installation path.' }
+        $exactPaths += @{ Name = '360Chrome browser application'; Path = (Join-Path $localAppData '360Chrome\Chrome\Application'); Confirm = 'Product'; Product = '360ChromeBrowser'; Reason = 'Exact 360Chrome Application directory with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360Chrome browser profile'; Path = (Join-Path $localAppData '360Chrome\Chrome\User Data'); Confirm = 'BrowserProfile'; Product = '360ChromeBrowser'; Reason = '360Chrome User Data can contain bookmarks, history, saved sessions, and other user data.' }
+        $exactPaths += @{ Name = '360ChromeX browser application'; Path = (Join-Path $localAppData '360ChromeX\Chrome\Application'); Confirm = 'Product'; Product = '360ChromeXBrowser'; Reason = 'Exact 360ChromeX Application directory with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360ChromeX browser profile'; Path = (Join-Path $localAppData '360ChromeX\Chrome\User Data'); Confirm = 'BrowserProfile'; Product = '360ChromeXBrowser'; Reason = '360ChromeX User Data can contain bookmarks, history, saved sessions, and other user data.' }
+        $exactPaths += @{ Name = 'Duohui screen saver'; Path = (Join-Path $localAppData 'dhpingbao'); Confirm = 'Duohui'; Product = 'Duohui'; Reason = 'Known duohuipingbao installation path.' }
     }
     if ($roamingAppData) {
-        $exactPaths += @{ Name = '360se6 browser application'; Path = (Join-Path $roamingAppData '360se6\Application'); Confirm = 'Product'; Reason = 'Exact 360se6 Application directory with local 360/Qihoo file evidence.' }
-        $exactPaths += @{ Name = '360se6 browser profile'; Path = (Join-Path $roamingAppData '360se6\User Data'); Confirm = 'BrowserProfile'; Reason = '360se6 User Data can contain bookmarks, history, saved sessions, and other user data.' }
-        $exactPaths += @{ Name = '360browser legacy profile'; Path = (Join-Path $roamingAppData '360browser'); Confirm = 'BrowserProfile'; Reason = 'Legacy browser profiles can contain bookmarks, history, saved sessions, and other user data.' }
-        $exactPaths += @{ Name = '360 Software Manager UI kernel'; Path = (Join-Path $roamingAppData 'secoresdk\360se6'); Confirm = 'Product'; Reason = 'Exact secoresdk 360se6 product directory with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360se6 browser application'; Path = (Join-Path $roamingAppData '360se6\Application'); Confirm = 'Product'; Product = '360SafeBrowser'; Reason = 'Exact 360se6 Application directory with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360se6 browser profile'; Path = (Join-Path $roamingAppData '360se6\User Data'); Confirm = 'BrowserProfile'; Product = '360SafeBrowser'; Reason = '360se6 User Data can contain bookmarks, history, saved sessions, and other user data.' }
+        $exactPaths += @{ Name = '360browser legacy profile'; Path = (Join-Path $roamingAppData '360browser'); Confirm = 'BrowserProfile'; Product = '360SafeBrowser'; Reason = 'Legacy browser profiles can contain bookmarks, history, saved sessions, and other user data.' }
+        $exactPaths += @{ Name = '360 Software Manager UI kernel'; Path = (Join-Path $roamingAppData 'secoresdk\360se6'); Confirm = 'Product'; Product = '360SoftMgr'; Reason = 'Exact secoresdk 360se6 product directory with local 360/Qihoo file evidence.' }
+        $roamingProductKeys = @{ '360Safe' = '360Security'; '360GameAssistant' = '360GameAssistant'; '360huabao' = 'Duohui'; '360DrvMgrScrSaver' = '360DriverMaster' }
         foreach ($name in @('360Safe', '360GameAssistant', '360huabao', '360DrvMgrScrSaver')) {
-            $exactPaths += @{ Name = $name; Path = (Join-Path $roamingAppData $name); Confirm = 'Product'; Reason = 'Exact current-user path with local 360/Qihoo file evidence.' }
+            $exactPaths += @{ Name = $name; Path = (Join-Path $roamingAppData $name); Confirm = 'Product'; Product = $roamingProductKeys[$name]; Reason = 'Exact current-user path with local 360/Qihoo file evidence.' }
         }
-        $exactPaths += @{ Name = 'GreenCore'; Path = (Join-Path $roamingAppData 'greencore'); Confirm = 'GreenCore'; Reason = 'GreenCore cache requires a 360greencore marker.' }
-        $exactPaths += @{ Name = 'GreenCore7z'; Path = (Join-Path $roamingAppData 'GreenCore7z'); Confirm = 'GreenCore'; Reason = 'GreenCore archive cache requires a 360 marker.' }
+        $exactPaths += @{ Name = 'GreenCore'; Path = (Join-Path $roamingAppData 'greencore'); Confirm = 'GreenCore'; Product = 'GreenCore'; Reason = 'GreenCore cache requires a 360greencore marker.' }
+        $exactPaths += @{ Name = 'GreenCore7z'; Path = (Join-Path $roamingAppData 'GreenCore7z'); Confirm = 'GreenCore'; Product = 'GreenCore'; Reason = 'GreenCore archive cache requires a 360 marker.' }
     }
     if ($tempRoot) {
-        $exactPaths += @{ Name = 'Duohui temporary package'; Path = (Join-Path $tempRoot 'duohuipingbao'); Confirm = 'Duohui'; Reason = 'Known duohuipingbao staging path.' }
-        $exactPaths += @{ Name = 'Huabao temporary package'; Path = (Join-Path $tempRoot 'huabao_tmp'); Confirm = 'Duohui'; Reason = 'Known Huabao installer staging path.' }
-        $exactPaths += @{ Name = '360 Game Assistant temporary files'; Path = (Join-Path $tempRoot '360gameassistantYyb'); Confirm = 'Product'; Reason = 'Exact temporary component path with local 360/Qihoo file evidence.' }
-        $exactPaths += @{ Name = '360 unpack temporary files'; Path = (Join-Path $tempRoot '360UnPackTmp64'); Confirm = 'Product'; Reason = 'Exact temporary component path with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = 'Duohui temporary package'; Path = (Join-Path $tempRoot 'duohuipingbao'); Confirm = 'Duohui'; Product = 'Duohui'; Reason = 'Known duohuipingbao staging path.' }
+        $exactPaths += @{ Name = 'Huabao temporary package'; Path = (Join-Path $tempRoot 'huabao_tmp'); Confirm = 'Duohui'; Product = 'Duohui'; Reason = 'Known Huabao installer staging path.' }
+        $exactPaths += @{ Name = '360 Game Assistant temporary files'; Path = (Join-Path $tempRoot '360gameassistantYyb'); Confirm = 'Product'; Product = '360GameAssistant'; Reason = 'Exact temporary component path with local 360/Qihoo file evidence.' }
+        $exactPaths += @{ Name = '360 unpack temporary files'; Path = (Join-Path $tempRoot '360UnPackTmp64'); Confirm = 'Product'; Product = '360Temp'; Reason = 'Exact temporary component path with local 360/Qihoo file evidence.' }
     }
 
     foreach ($candidate in $exactPaths) {
@@ -1398,9 +1647,10 @@ function Get-360Findings {
         Add-Finding $findings (New-Finding -Kind 'Path' -Name $candidate.Name -Target (Get-NormalPath $candidate.Path) `
             -Confidence $(if ($confirmed) { 'Confirmed' } else { 'ReviewOnly' }) `
             -Reason $(if ($confirmed) { $candidate.Reason } else { $notConfirmedReason }) `
-            -RemovalType $(if ($confirmed) { 'Path' } else { 'None' }))
+            -RemovalType $(if ($confirmed) { 'Path' } else { 'None' }) -ProductKey $candidate.Product)
     }
 
+    Write-360CleanupProgress 'ScanVendorUninstaller'
     $duohuiInstallRoot = if ($localAppData) {
         Get-NormalPath (Join-Path $localAppData 'dhpingbao')
     }
@@ -1454,7 +1704,7 @@ function Get-360Findings {
         Add-Finding $findings (New-Finding -Kind 'VendorUninstaller' -Name 'Duohui vendor uninstaller' `
             -Target $duohuiVendorPath -Confidence $(if ($vendorConfirmed) { 'Confirmed' } else { 'ReviewOnly' }) `
             -Reason $vendorReason -RemovalType $(if ($vendorConfirmed) { 'VendorUninstaller' } else { 'None' }) `
-            -ValueName $vendorHash)
+            -ValueName $vendorHash -ProductKey 'Duohui')
     }
 
     if ($tempRoot -and (Test-Path -LiteralPath $tempRoot)) {
@@ -1463,10 +1713,12 @@ function Get-360Findings {
         $tempFiles += @(Get-ChildItem -LiteralPath $tempRoot -File -Filter '360se*.cab' -ErrorAction SilentlyContinue)
         foreach ($file in $tempFiles | Sort-Object FullName -Unique) {
             Add-Finding $findings (New-Finding -Kind 'Path' -Name '360 temporary package' -Target $file.FullName `
-                -Confidence 'ReviewOnly' -Reason 'Filename pattern matched, but a CAB name alone is not enough evidence for automatic deletion.')
+                -Confidence 'ReviewOnly' -Reason 'Filename pattern matched, but a CAB name alone is not enough evidence for automatic deletion.' `
+                -ProductKey '360Temp')
         }
     }
 
+    Write-360CleanupProgress 'ScanToolbox'
     $toolboxRoot = if ($localAppData) { Join-Path $localAppData 'winToolBox' } else { $null }
     $toolboxConfirmed = $false
     $softMgrConfirmed = $false
@@ -1480,12 +1732,12 @@ function Get-360Findings {
                 Add-Finding $findings (New-Finding -Kind 'Path' -Name '360 SoftMgr inside Aolande/Huajun winToolBox' `
                     -Target $softMgr.FullName -Confidence 'Confirmed' `
                     -Reason 'SoftMgr subtree contains 360-signed or 360-identified executable/DLL evidence; winToolBox itself is third-party.' `
-                    -RemovalType 'Path')
+                    -RemovalType 'Path' -ProductKey 'WinToolBox360')
             }
             else {
                 Add-Finding $findings (New-Finding -Kind 'Path' -Name 'Ambiguous SoftMgr inside winToolBox' `
                     -Target $softMgr.FullName -Confidence 'ReviewOnly' `
-                    -Reason 'Name matched SoftMgr but deterministic 360 markers were not found.')
+                    -Reason 'Name matched SoftMgr but deterministic 360 markers were not found.' -ProductKey 'WinToolBox360')
             }
         }
 
@@ -1495,19 +1747,20 @@ function Get-360Findings {
             Add-Finding $findings (New-Finding -Kind 'Path' -Name '360-signed component inside third-party winToolBox' `
                 -Target $file.FullName -Confidence 'Confirmed' `
                 -Reason ('File is signed or identified as a 360/Qihoo component. Signer: ' + (Get-SignerSubject $file.FullName)) `
-                -RemovalType 'Path')
+                -RemovalType 'Path' -ProductKey 'WinToolBox360')
         }
 
         if ($toolboxConfirmed) {
             Add-Finding $findings (New-Finding -Kind 'Bundle' -Name 'Aolande/Huajun winToolBox mixed bundle' `
                 -Target $toolboxRoot -Confidence 'ReviewOnly' `
-                -Reason 'Third-party toolbox contains confirmed 360 components. Do not remove the entire toolbox without separate approval.')
+                -Reason 'Third-party toolbox contains confirmed 360 components. Do not remove the entire toolbox without separate approval.' `
+                -ProductKey 'WinToolBox360')
             $updater = Join-Path $toolboxRoot 'winToolBoxSrv.exe'
             if ($softMgrConfirmed -and (Test-Path -LiteralPath $updater -PathType Leaf)) {
                 Add-Finding $findings (New-Finding -Kind 'Path' -Name 'winToolBox updater linked to confirmed SoftMgr bundle' `
                     -Target $updater -Confidence 'Confirmed' `
                     -Reason 'Exact third-party updater associated with a locally confirmed 360 SoftMgr/download chain.' `
-                    -RemovalType 'Path')
+                    -RemovalType 'Path' -ProductKey 'WinToolBox360')
             }
         }
     }
@@ -1519,7 +1772,7 @@ function Get-360Findings {
             Add-Finding $findings (New-Finding -Kind 'Path' -Name 'Roaming SoftMgr cache' -Target $directory.FullName `
                 -Confidence $(if ($confirmed) { 'Confirmed' } else { 'ReviewOnly' }) `
                 -Reason $(if ($confirmed) { 'Paired with confirmed 360 SoftMgr evidence.' } else { 'SoftMgr name without enough local 360 evidence.' }) `
-                -RemovalType $(if ($confirmed) { 'Path' } else { 'None' }))
+                -RemovalType $(if ($confirmed) { 'Path' } else { 'None' }) -ProductKey '360SoftMgr')
         }
     }
 
@@ -1530,10 +1783,11 @@ function Get-360Findings {
             Add-Finding $findings (New-Finding -Kind 'Path' -Name 'Program Files SoftMgr' -Target $machineSoftMgr `
                 -Confidence $(if ($confirmed) { 'Confirmed' } else { 'ReviewOnly' }) `
                 -Reason $(if ($confirmed) { '360 product metadata or DLL markers found.' } else { 'Ambiguous SoftMgr directory without sufficient markers.' }) `
-                -RemovalType $(if ($confirmed) { 'Path' } else { 'None' }))
+                -RemovalType $(if ($confirmed) { 'Path' } else { 'None' }) -ProductKey '360SoftMgr')
         }
     }
 
+    Write-360CleanupProgress 'ScanInstalledPrograms'
     $currentUserUninstallRoot = $currentUserRegistryRoot + '\Software\Microsoft\Windows\CurrentVersion\Uninstall'
     $duohuiOrphanedRecord = $false
     $uninstallRoots = @(
@@ -1543,7 +1797,14 @@ function Get-360Findings {
     )
     foreach ($root in $uninstallRoots) {
         if (-not (Test-360CleanupRegistryPath $root)) { continue }
-        foreach ($key in @(Get-360CleanupRegistrySubKeys $root)) {
+        $uninstallKeys = @()
+        try { $uninstallKeys = @(Get-360CleanupRegistrySubKeysStrict $root) }
+        catch {
+            Add-360ScanIssue -Area 'InstalledPrograms' -Target $root `
+                -Detail ('The installed-program list could not be read completely. ' + $_.Exception.Message)
+            $uninstallKeys = @(Get-360CleanupRegistrySubKeys $root)
+        }
+        foreach ($key in $uninstallKeys) {
             $properties = Get-360CleanupRegistryValues $key.PSPath
             $displayName = [string](Get-PropertyValue $properties 'DisplayName')
             $publisher = [string](Get-PropertyValue $properties 'Publisher')
@@ -1582,7 +1843,8 @@ function Get-360Findings {
             }
             $productFinding = New-Finding -Kind 'InstalledProduct' -Name $displayName -Target $key.PSPath `
                 -Confidence $(if ($orphaned) { 'Confirmed' } else { 'ReviewOnly' }) `
-                -Reason $reason -RemovalType $(if ($orphaned) { 'RegistryKey' } else { 'None' })
+                -Reason $reason -RemovalType $(if ($orphaned) { 'RegistryKey' } else { 'None' }) `
+                -ProductKey (Get-360InstalledProductKey -DisplayName $displayName -IsExactDuohuiRecord $isExactDuohuiRecord)
             if ($orphaned) {
                 $productIdentity = Get-360CleanupNonPathIdentityState -Finding $productFinding `
                     -ObservedIdentity $properties
@@ -1596,6 +1858,7 @@ function Get-360Findings {
         }
     }
 
+    Write-360CleanupProgress 'ScanRegistryResidue'
     $duohuiRegistryResidues = New-Object System.Collections.ArrayList
     $currentUserSoftwareRoot = $currentUserRegistryRoot + '\Software'
     $directDuohuiResidue = $currentUserSoftwareRoot + '\duohuipingbao'
@@ -1622,7 +1885,7 @@ function Get-360Findings {
                 'Exact Duohui residue paired with the proven orphan HKCU duohuipingbao uninstall record.'
             } else {
                 'Exact Duohui residue found without a proven orphan HKCU duohuipingbao uninstall record; review only.'
-            }) -RemovalType $(if ($duohuiOrphanedRecord) { 'RegistryKey' } else { 'None' })
+            }) -RemovalType $(if ($duohuiOrphanedRecord) { 'RegistryKey' } else { 'None' }) -ProductKey 'Duohui'
         if ($duohuiOrphanedRecord) {
             try { $residueRootProperties = Get-360CleanupRegistryValuesStrict ([string]$residue) }
             catch { $residueRootProperties = $null }
@@ -1635,7 +1898,9 @@ function Get-360Findings {
     }
 
     $confirmedRoots = Get-ConfirmedPathRoots @($findings)
+    $productKeyByRoot = Get-360ConfirmedPathProductKeys @($findings)
 
+    Write-360CleanupProgress 'ScanStartup'
     $runRoots = @(
         ($currentUserRegistryRoot + '\Software\Microsoft\Windows\CurrentVersion\Run'),
         ($currentUserRegistryRoot + '\Software\Microsoft\Windows\CurrentVersion\RunOnce'),
@@ -1655,7 +1920,8 @@ function Get-360Findings {
             if ($matchedRoot) {
                 $startupFinding = New-Finding -Kind 'Startup' -Name $property.Name -Target $runRoot `
                     -Confidence 'Confirmed' -Reason ('Startup executable is under confirmed target: ' + $matchedRoot) `
-                    -RemovalType 'RegistryValue' -ValueName $property.Name
+                    -RemovalType 'RegistryValue' -ValueName $property.Name `
+                    -ProductKey (Get-360ProductKeyForRoot -Map $productKeyByRoot -Root $matchedRoot)
                 $startupIdentity = Get-360CleanupNonPathIdentityState -Finding $startupFinding `
                     -ObservedIdentity $property
                 Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $startupFinding `
@@ -1679,7 +1945,8 @@ function Get-360Findings {
             if ($screenSaver -and (Test-IsUnderPath $screenSaver $confirmedRoot)) {
                 $screenSaverFinding = New-Finding -Kind 'ScreenSaver' -Name 'SCRNSAVE.EXE' -Target $desktopKey `
                     -Confidence 'Confirmed' -Reason 'Screen saver setting points under a confirmed target.' `
-                    -RemovalType 'RegistryValue' -ValueName 'SCRNSAVE.EXE'
+                    -RemovalType 'RegistryValue' -ValueName 'SCRNSAVE.EXE' `
+                    -ProductKey (Get-360ProductKeyForRoot -Map $productKeyByRoot -Root $confirmedRoot)
                 $screenSaverIdentity = Get-360CleanupNonPathIdentityState -Finding $screenSaverFinding `
                     -ObservedIdentity $screenSaverProperty
                 Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $screenSaverFinding `
@@ -1689,9 +1956,22 @@ function Get-360Findings {
         }
     }
 
-    try {
-        foreach ($task in @(Get-360CleanupScheduledTasks)) {
-            $actionExecutables = @($task.Actions | ForEach-Object { Get-NormalPath ([string]$_.Execute) } | Where-Object { $_ })
+    Write-360CleanupProgress 'ScanScheduledTasks'
+    $scheduledTasks = @()
+    try { $scheduledTasks = @(Get-360CleanupScheduledTasksStrict) }
+    catch {
+        Add-360ScanIssue -Area 'ScheduledTasks' `
+            -Detail ('The scheduled-task list could not be read completely. ' + $_.Exception.Message)
+        try { $scheduledTasks = @(Get-360CleanupScheduledTasks) }
+        catch { $scheduledTasks = @() }
+    }
+    foreach ($task in $scheduledTasks) {
+        try {
+            # COM-handler actions have no Execute property; reading it directly under StrictMode used to
+            # abort the whole task loop silently, leaving every later task unchecked.
+            $actionExecutables = @(@(Get-PropertyValue $task 'Actions') | Where-Object { $null -ne $_ } | ForEach-Object {
+                Get-NormalPath ([string](Get-PropertyValue $_ 'Execute'))
+            } | Where-Object { $_ })
             $matchedRoot = $null
             foreach ($action in $actionExecutables) {
                 foreach ($confirmedRoot in $confirmedRoots) {
@@ -1702,21 +1982,34 @@ function Get-360Findings {
             if ($matchedRoot) {
                 $taskFinding = New-Finding -Kind 'ScheduledTask' -Name $task.TaskName -Target $task.TaskName `
                     -Confidence 'Confirmed' -Reason 'Task action points under an exact confirmed target.' `
-                    -RemovalType 'Task' -ValueName $task.TaskPath
+                    -RemovalType 'Task' -ValueName $task.TaskPath `
+                    -ProductKey (Get-360ProductKeyForRoot -Map $productKeyByRoot -Root $matchedRoot)
                 $taskIdentity = Get-360CleanupNonPathIdentityState -Finding $taskFinding `
                     -ObservedIdentity $task
                 Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $taskFinding `
                     -IdentityState $taskIdentity)
             }
-            elseif ($task.TaskName -match '(?i)360|SoftMgr|huabao|duohuipingbao') {
+            elseif ([string](Get-PropertyValue $task 'TaskName') -match '(?i)360|SoftMgr|huabao|duohuipingbao') {
                 Add-Finding $findings (New-Finding -Kind 'ScheduledTask' -Name $task.TaskName -Target $task.TaskName `
                     -Confidence 'ReviewOnly' -Reason 'Task name matched, but its action was not under a confirmed target.')
             }
         }
+        catch {
+            Add-360ScanIssue -Area 'ScheduledTasks' -Target ([string](Get-PropertyValue $task 'TaskName')) `
+                -Detail ('This scheduled task could not be inspected. ' + $_.Exception.Message)
+        }
     }
-    catch {}
 
-    foreach ($service in @(Get-360CleanupServices)) {
+    Write-360CleanupProgress 'ScanServices'
+    $serviceItems = @()
+    try { $serviceItems = @(Get-360CleanupServicesStrict) }
+    catch {
+        Add-360ScanIssue -Area 'Services' `
+            -Detail ('The service list could not be read completely. ' + $_.Exception.Message)
+        try { $serviceItems = @(Get-360CleanupServices) }
+        catch { $serviceItems = @() }
+    }
+    foreach ($service in $serviceItems) {
         $executable = Get-CommandExecutable ([string]$service.PathName)
         $matchedRoot = $null
         foreach ($confirmedRoot in $confirmedRoots) {
@@ -1725,9 +2018,13 @@ function Get-360Findings {
         $confirmedToolboxService = $softMgrConfirmed -and $service.Name -eq 'WinToolBoxUpdateSrv' -and
             $toolboxRoot -and $executable -and $executable.Equals((Get-NormalPath (Join-Path $toolboxRoot 'winToolBoxSrv.exe')), [StringComparison]::OrdinalIgnoreCase)
         if ($matchedRoot -or $confirmedToolboxService) {
+            $serviceProductKey = if ($matchedRoot) {
+                Get-360ProductKeyForRoot -Map $productKeyByRoot -Root $matchedRoot
+            }
+            else { 'WinToolBox360' }
             $serviceFinding = New-Finding -Kind 'Service' -Name $service.Name -Target $service.Name `
                 -Confidence 'Confirmed' -Reason 'Service executable is a confirmed target or confirmed mixed-bundle updater.' `
-                -RemovalType 'Service'
+                -RemovalType 'Service' -ProductKey $serviceProductKey
             $serviceIdentity = Get-360CleanupNonPathIdentityState -Finding $serviceFinding `
                 -ObservedIdentity $service
             Add-Finding $findings (Set-360CleanupFindingIdentityFingerprint -Finding $serviceFinding `
@@ -1738,7 +2035,7 @@ function Get-360Findings {
             Add-Finding $findings (New-Finding -Kind 'Service' -Name $service.Name -Target $service.Name `
                 -Confidence 'ReviewOnly' `
                 -Reason 'Service executable is under a confirmed mixed winToolBox bundle, but this sibling toolbox service is not approved for removal.' `
-                -RemovalType 'None')
+                -RemovalType 'None' -ProductKey 'WinToolBox360')
         }
         elseif ($service.Name -match '(?i)360|SoftMgr|huabao|duohuipingbao' -or
             ($executable -and $executable -match '(?i)(?:^|[\\/])360[^\\/]*(?:[\\/]|$)|SoftMgr|huabao|duohuipingbao')) {
@@ -1747,27 +2044,47 @@ function Get-360Findings {
         }
     }
 
+    Write-360CleanupProgress 'ScanDrivers'
     $driverRoot = Join-Path $script:KnownFolders.Windows 'System32\drivers'
-    foreach ($driver in @(Get-ChildItem -LiteralPath $driverRoot -File -Filter '360*.sys' -ErrorAction SilentlyContinue)) {
-        Add-Finding $findings (New-Finding -Kind 'Driver' -Name $driver.Name -Target $driver.FullName `
-            -Confidence 'ReviewOnly' -Reason 'System driver requires vendor-uninstaller and driver-package review; never auto-delete.')
+    if (Test-Path -LiteralPath $driverRoot -PathType Container) {
+        $driverErrors = $null
+        foreach ($driver in @(Get-ChildItem -LiteralPath $driverRoot -File -Filter '360*.sys' -ErrorAction SilentlyContinue -ErrorVariable driverErrors)) {
+            Add-Finding $findings (New-Finding -Kind 'Driver' -Name $driver.Name -Target $driver.FullName `
+                -Confidence 'ReviewOnly' -Reason 'System driver requires vendor-uninstaller and driver-package review; never auto-delete.' `
+                -ProductKey 'Drivers')
+        }
+        if (@($driverErrors).Count -gt 0) {
+            Add-360ScanIssue -Area 'Drivers' -Target $driverRoot `
+                -Detail ('The driver folder could not be listed completely. ' + [string](@($driverErrors)[0]))
+        }
     }
 
+    Write-360CleanupProgress 'ScanProcesses'
     $confirmedRoots = Get-ConfirmedPathRoots @($findings)
-    foreach ($process in @(Get-360CleanupProcesses)) {
+    $productKeyByRoot = Get-360ConfirmedPathProductKeys @($findings)
+    $processItems = @()
+    try { $processItems = @(Get-360CleanupProcessesStrict) }
+    catch {
+        Add-360ScanIssue -Area 'Processes' `
+            -Detail ('The running-program list could not be read completely. ' + $_.Exception.Message)
+        try { $processItems = @(Get-360CleanupProcesses) }
+        catch { $processItems = @() }
+    }
+    foreach ($process in $processItems) {
         $path = Get-NormalPath ([string]$process.ExecutablePath)
         if (-not $path) { continue }
         foreach ($confirmedRoot in $confirmedRoots) {
             if (Test-IsUnderPath $path $confirmedRoot) {
                 Add-Finding $findings (New-Finding -Kind 'Process' -Name $process.Name -Target ([string]$process.ProcessId) `
                     -Confidence 'Confirmed' -Reason ('Executable path under confirmed target: ' + $path) -RemovalType 'Process' `
-                    -ValueName $path)
+                    -ValueName $path -ProductKey (Get-360ProductKeyForRoot -Map $productKeyByRoot -Root $confirmedRoot))
                 break
             }
         }
     }
 
     if ($OfflineRoot) {
+        Write-360CleanupProgress 'ScanOfflineWindows'
         $offline = Get-NormalPath $OfflineRoot
         if (-not $offline -or -not (Test-Path -LiteralPath (Join-Path $offline 'Windows'))) {
             throw "OfflineWindowsRoot does not contain a Windows directory: $OfflineRoot"
@@ -1777,7 +2094,8 @@ function Get-360Findings {
             $path = Join-Path $offline $relative
             if (Test-Path -LiteralPath $path) {
                 Add-Finding $findings (New-Finding -Kind 'OfflinePath' -Name 'Offline Windows 360 path' -Target $path `
-                    -Confidence 'ReviewOnly' -Reason 'Found in another Windows installation; the bundled script is permanently scan-only for offline roots.' -Offline $true)
+                    -Confidence 'ReviewOnly' -Reason 'Found in another Windows installation; the bundled script is permanently scan-only for offline roots.' -Offline $true `
+                    -ProductKey 'OfflineWindows')
             }
         }
 
@@ -1795,13 +2113,15 @@ function Get-360Findings {
                     $path = Join-Path $profile.FullName $relative
                     if (Test-Path -LiteralPath $path) {
                         Add-Finding $findings (New-Finding -Kind 'OfflinePath' -Name 'Offline user 360 path' -Target $path `
-                            -Confidence 'ReviewOnly' -Reason 'Found under another Windows user profile; scan-only.' -Offline $true)
+                            -Confidence 'ReviewOnly' -Reason 'Found under another Windows user profile; scan-only.' -Offline $true `
+                            -ProductKey 'OfflineWindows')
                     }
                 }
             }
         }
     }
 
+    Write-360CleanupProgress 'ScanComplete' ([string]$findings.Count)
     return @($findings)
 }
 
@@ -2321,7 +2641,11 @@ function Save-CleanupReport {
         [object]$ApprovalContext = $null,
         [string]$ApprovedReportHash = $null,
         [string]$OutcomeRunId = $null,
-        [bool]$IncludeIdentity = $false
+        [bool]$IncludeIdentity = $false,
+        [object]$ScanCoverage = $null,
+        [object]$Selection = $null,
+        [object]$TaskVerification = $null,
+        [bool]$IncludeTaskVerification = $false
     )
 
     $Path = Assert-SafeReportPath $Path
@@ -2329,8 +2653,10 @@ function Save-CleanupReport {
     if ($directory -and -not (Test-Path -LiteralPath $directory)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
-    $report = [pscustomobject]@{
+    $reportFields = [ordered]@{
         SchemaVersion = 2
+        ToolVersion   = $script:ToolVersion
+        RunElevated   = [bool](Test-IsAdministrator)
         Timestamp    = (Get-Date).ToString('o')
         ComputerName = $(if ($IncludeIdentity) { $env:COMPUTERNAME } else { $null })
         User          = $(if ($IncludeIdentity) { [Security.Principal.WindowsIdentity]::GetCurrent().Name } else { $null })
@@ -2339,9 +2665,13 @@ function Save-CleanupReport {
         ApprovedReportHash = $ApprovedReportHash
         OutcomeRunId  = $OutcomeRunId
         Summary       = $Summary
-        Findings      = @($Findings)
-        Actions       = @($Actions)
+        ScanCoverage  = $ScanCoverage
     }
+    if ($null -ne $Selection) { $reportFields['Selection'] = $Selection }
+    if ($IncludeTaskVerification) { $reportFields['TaskVerification'] = $TaskVerification }
+    $reportFields['Findings'] = @($Findings)
+    $reportFields['Actions'] = @($Actions)
+    $report = [pscustomobject]$reportFields
     $json = $report | ConvertTo-Json -Depth 8
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     $stream = New-Object IO.FileStream($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -2356,13 +2686,34 @@ function Save-CleanupReport {
 }
 
 function Show-Findings {
-    param([object[]]$Findings)
+    param(
+        [object[]]$Findings,
+        [object]$Coverage = $null
+    )
 
+    $coverageIncomplete = $null -ne $Coverage -and -not [bool]$Coverage.Complete
     if (@($Findings).Count -eq 0) {
-        Write-Host 'No matching 360/Qihoo findings.' -ForegroundColor Green
-        return
+        if ($coverageIncomplete) {
+            Write-Warning 'No matching 360/Qihoo findings were found, but some checks did not complete.'
+        }
+        else {
+            Write-Host 'No matching 360/Qihoo findings.' -ForegroundColor Green
+        }
     }
-    $Findings | Sort-Object Confidence, Kind, Name | Select-Object Confidence, Kind, Name, Target, Reason | Format-Table -AutoSize -Wrap
+    else {
+        $Findings | Sort-Object Confidence, Kind, Name | Select-Object Confidence, Kind, Name, Target, Reason | Format-Table -AutoSize -Wrap
+    }
+    Show-ScanCoverage $Coverage
+}
+
+function Show-ScanCoverage {
+    param([object]$Coverage)
+
+    if ($null -eq $Coverage -or [bool]$Coverage.Complete) { return }
+    Write-Warning ('{0} check(s) did not complete; results may be incomplete.' -f @($Coverage.Issues).Count)
+    foreach ($issue in @($Coverage.Issues)) {
+        Write-Host ('  [{0}] {1} {2}' -f $issue.Area, $issue.Target, $issue.Detail)
+    }
 }
 
 function Add-Action {
@@ -2914,6 +3265,7 @@ function Remove-ConfirmedFindings {
     )
 
     $actions = New-Object System.Collections.ArrayList
+    Write-360CleanupProgress 'Preflight'
     $confirmed = @($Findings | Where-Object { $_.Confidence -eq 'Confirmed' -and -not $_.Offline })
     $pathTargets = @($confirmed | Where-Object { $_.RemovalType -eq 'Path' } | ForEach-Object { $_.Target } | Sort-Object -Unique)
     if ($confirmed.Count -gt 256 -or $pathTargets.Count -gt 64) {
@@ -3068,6 +3420,7 @@ function Remove-ConfirmedFindings {
     }
 
     $vendorFindings = @($confirmed | Where-Object { $_.RemovalType -eq 'VendorUninstaller' })
+    if ($vendorFindings.Count -gt 0) { Write-360CleanupProgress 'VendorUninstaller' }
 
     $postVendorMutationBlocked = $false
     $vendorPending = $false
@@ -3230,6 +3583,7 @@ function Remove-ConfirmedFindings {
         }
     }
 
+    Write-360CleanupProgress 'RemovingServices'
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Service' })) {
         if ($postVendorMutationBlocked) { break }
         try {
@@ -3277,6 +3631,7 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'DeleteService' $finding.Target 'Failed' $_.Exception.Message }
     }
 
+    Write-360CleanupProgress 'RemovingTasks'
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Task' })) {
         if ($postVendorMutationBlocked) { break }
         try {
@@ -3297,6 +3652,7 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'DeleteTask' ($finding.ValueName + $finding.Target) 'Failed' $_.Exception.Message }
     }
 
+    Write-360CleanupProgress 'StoppingProcesses'
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'Process' })) {
         if ($postVendorMutationBlocked) { break }
         if ($vendorPending -and -not (Test-IsPathIndependentFromDuohui ([string]$finding.ValueName))) {
@@ -3313,6 +3669,7 @@ function Remove-ConfirmedFindings {
         Add-Action $actions 'StopProcess' ([string]$result.Target) ([string]$result.Result) ([string]$result.Detail)
     }
 
+    Write-360CleanupProgress 'RemovingRegistryValues'
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'RegistryValue' })) {
         if ($postVendorMutationBlocked) { break }
         try {
@@ -3333,6 +3690,7 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'DeleteRegistryValue' ($finding.Target + ' :: ' + $finding.ValueName) 'Failed' $_.Exception.Message }
     }
 
+    Write-360CleanupProgress 'RemovingRegistryKeys'
     foreach ($finding in @($confirmed | Where-Object { $_.RemovalType -eq 'RegistryKey' })) {
         if ($postVendorMutationBlocked) { break }
         try {
@@ -3351,6 +3709,7 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'DeleteRegistryKey' $finding.Target 'Failed' $_.Exception.Message }
     }
 
+    Write-360CleanupProgress 'RemovingPaths'
     $failedTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
     $forceTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
     $accessDeniedDeleteTargets = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
@@ -3393,6 +3752,9 @@ function Remove-ConfirmedFindings {
     }
 
     $explorerStopped = $false
+    if (-not $postVendorMutationBlocked -and ($failedTargets.Count -gt 0 -or $accessDeniedPathTargets.Count -gt 0)) {
+        Write-360CleanupProgress 'RetryingLockedPaths'
+    }
     if (-not $postVendorMutationBlocked -and $failedTargets.Count -gt 0) {
         $holders = New-Object System.Collections.ArrayList
         foreach ($candidateProcess in @(Get-Process -ErrorAction SilentlyContinue)) {
@@ -3727,6 +4089,7 @@ function Remove-ConfirmedFindings {
         catch { Add-Action $actions 'RestartExplorer' 'explorer.exe' 'Failed' $_.Exception.Message }
     }
 
+    Write-360CleanupProgress 'MeasuringResults'
     $filesRemoved = [int64]0
     $directoriesRemoved = [int64]0
     $bytesRemoved = [int64]0
@@ -4072,6 +4435,693 @@ function Show-CleanupReportOutcome {
     return $report
 }
 
+function ConvertTo-360CleanupTargetRecord {
+    param([object]$Finding)
+
+    $productKey = [string](Get-PropertyValue $Finding 'ProductKey')
+    return [pscustomobject]@{
+        SelectionId         = [string](Get-PropertyValue $Finding 'SelectionId')
+        Kind                = [string](Get-PropertyValue $Finding 'Kind')
+        Name                = [string](Get-PropertyValue $Finding 'Name')
+        Target              = [string](Get-PropertyValue $Finding 'Target')
+        ValueName           = [string](Get-PropertyValue $Finding 'ValueName')
+        RemovalType         = [string](Get-PropertyValue $Finding 'RemovalType')
+        IdentityFingerprint = [string](Get-PropertyValue $Finding 'IdentityFingerprint')
+        ProductKey          = $(if ([string]::IsNullOrWhiteSpace($productKey)) { 'Unattributed' } else { $productKey })
+    }
+}
+
+function Get-360CleanupRecordIdentityKey {
+    param(
+        [object]$Record,
+        [string]$UserSid
+    )
+
+    try { return Get-FindingApprovalKey -Finding $Record -UserSid $UserSid }
+    catch {
+        return ('RESOURCE' + [string][char]31 + (Get-FindingResourceKey -Finding $Record -UserSid $UserSid))
+    }
+}
+
+function ConvertTo-360CleanupTargetRecords {
+    param(
+        [object[]]$Findings,
+        [string]$UserSid,
+        [object[]]$ExcludeFindings = @()
+    )
+
+    $excluded = @{}
+    foreach ($finding in @($ExcludeFindings)) {
+        if ($null -eq $finding) { continue }
+        $excluded[(Get-360CleanupRecordIdentityKey -Record $finding -UserSid $UserSid)] = $true
+    }
+    $seen = @{}
+    $records = New-Object System.Collections.ArrayList
+    foreach ($finding in @($Findings)) {
+        if ($null -eq $finding) { continue }
+        $key = Get-360CleanupRecordIdentityKey -Record $finding -UserSid $UserSid
+        if ($excluded.ContainsKey($key) -or $seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [void]$records.Add((ConvertTo-360CleanupTargetRecord $finding))
+    }
+    return @($records)
+}
+
+function New-360CleanupSelectionRecord {
+    param(
+        [bool]$SelectionApplied,
+        [string]$ApprovedReportPath,
+        [string]$ApprovedReportHash,
+        [string[]]$SelectedIds = @(),
+        [object]$ResolvedSelection,
+        [object]$ApprovalComparison,
+        [string]$UserSid,
+        [object]$ApprovedScanElevated = $null
+    )
+
+    # The selection record documents what this run was allowed to process. It is evidence for
+    # read-only verification only and can never authorize a later removal.
+    $unapproved = @($ApprovalComparison.NewSinceApproval)
+    $preservedRecords = @()
+    if ($SelectionApplied) {
+        $preservedRecords = @(ConvertTo-360CleanupTargetRecords -Findings @($ResolvedSelection.UnselectedCurrent) `
+            -UserSid $UserSid -ExcludeFindings $unapproved)
+    }
+    $selectedRecords = @(ConvertTo-360CleanupTargetRecords -Findings @($ResolvedSelection.Eligible) -UserSid $UserSid)
+    $unapprovedRecords = @(ConvertTo-360CleanupTargetRecords -Findings $unapproved -UserSid $UserSid)
+    $selectedIdValues = @($SelectedIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $scanElevatedValue = if ($null -eq $ApprovedScanElevated) { $null } else { [bool]$ApprovedScanElevated }
+    return [pscustomobject]@{
+        SelectionApplied   = [bool]$SelectionApplied
+        ApprovedReportPath = [string]$ApprovedReportPath
+        ApprovedReportHash = [string]$ApprovedReportHash
+        ApprovedScanElevated = $scanElevatedValue
+        SelectedFindingIds = $selectedIdValues
+        SelectedTargets    = $selectedRecords
+        PreservedTargets   = $preservedRecords
+        UnapprovedTargets  = $unapprovedRecords
+    }
+}
+
+function Complete-360CleanupRemovalSummary {
+    param(
+        [System.Collections.IDictionary]$Summary,
+        [object]$ApprovalComparison,
+        [object]$ResolvedSelection,
+        [object]$SelectionRecord,
+        [bool]$SelectionApplied,
+        [bool]$RescanComplete,
+        [object[]]$RemainingFindings = @(),
+        [string]$UserSid,
+        [string]$ApprovedReportHash
+    )
+
+    $remainingConfirmed = $null
+    $remainingSelected = $null
+    $selectedAbsent = $null
+    $selectedStillPresent = $null
+    $selectedUnknown = $null
+    $preservedPresent = $null
+    $preservedNotPresent = $null
+    if ($RescanComplete) {
+        $remainingConfirmed = @($RemainingFindings | Where-Object { $null -ne $_ -and $_.Confidence -eq 'Confirmed' }).Count
+
+        # A selection ID that no longer matches is not proof of removal. Classify every processed
+        # target with the same read-only probes used by Verify and count anything not proven gone.
+        $immediateCheck = Get-360CleanupTaskVerification -Previous (New-360CleanupPreviousReportState -Usable $true `
+            -Report ([pscustomobject]@{
+                Selection = $SelectionRecord; Timestamp = ''; ToolVersion = $script:ToolVersion
+                ApprovedReportHash = $ApprovedReportHash
+            })) -CurrentFindings $RemainingFindings -UserSid $UserSid
+        $selectedAbsent = [int]$immediateCheck.Counts.SelectedAbsent
+        $selectedStillPresent = [int]$immediateCheck.Counts.SelectedRemaining + [int]$immediateCheck.Counts.SelectedChanged
+        $selectedUnknown = [int]$immediateCheck.Counts.SelectedUnknown
+        # Kept items are re-checked too: a vendor uninstaller may remove components the user did not tick.
+        $preservedPresent = [int]$immediateCheck.Counts.PreservedPresent
+        $preservedNotPresent = [int]$immediateCheck.Counts.PreservedAbsent + [int]$immediateCheck.Counts.PreservedChanged +
+            [int]$immediateCheck.Counts.PreservedUnknown
+        $notProvenGone = $selectedStillPresent + $selectedUnknown
+        if ($SelectionApplied) {
+            $remainingSelected = $notProvenGone
+        }
+        else { $remainingSelected = [Math]::Max([int]$remainingConfirmed, [int]$notProvenGone) }
+    }
+    $Summary['ImmediateRescanComplete'] = [bool]$RescanComplete
+    $Summary['ApprovedConfirmed'] = [int]$ApprovalComparison.ApprovedCount
+    $Summary['EligibleApproved'] = @($ApprovalComparison.Eligible).Count
+    $Summary['NewSinceApproval'] = @($ApprovalComparison.NewSinceApproval).Count
+    $Summary['MissingSinceApproval'] = @($ApprovalComparison.MissingSinceApproval).Count
+    $Summary['NoLongerConfirmed'] = @($ApprovalComparison.NoLongerConfirmed).Count
+    $Summary['SelectionApplied'] = [bool]$SelectionApplied
+    $Summary['SelectedConfirmedFindings'] = @($ResolvedSelection.Eligible).Count
+    $Summary['UnselectedConfirmedFindings'] = @($ResolvedSelection.UnselectedCurrent).Count
+    $Summary['ImmediateRemainingConfirmed'] = $remainingConfirmed
+    $Summary['NoImmediateConfirmedFindings'] = ($null -ne $remainingConfirmed -and $remainingConfirmed -eq 0)
+    $Summary['ImmediateRemainingSelected'] = $remainingSelected
+    $Summary['NoImmediateSelectedFindings'] = ($null -ne $remainingSelected -and $remainingSelected -eq 0)
+    $Summary['ImmediateSelectedConfirmedAbsent'] = $selectedAbsent
+    $Summary['ImmediateSelectedStillPresent'] = $selectedStillPresent
+    $Summary['ImmediateSelectedUnknown'] = $selectedUnknown
+    $Summary['ImmediatePreservedStillPresent'] = $preservedPresent
+    $Summary['ImmediatePreservedNotConfirmedPresent'] = $preservedNotPresent
+    return $remainingSelected
+}
+
+function New-360CleanupPreviousReportState {
+    param(
+        [bool]$Usable,
+        [string]$Reason = '',
+        [string]$Detail = '',
+        [string]$Path = '',
+        [string]$Hash = '',
+        [object]$Report = $null
+    )
+
+    return [pscustomobject]@{
+        Usable = $Usable; Reason = $Reason; Detail = $Detail
+        Path = $Path; Hash = $Hash; Report = $Report
+    }
+}
+
+function Read-360CleanupPreviousRemoveReport {
+    param(
+        [string]$Path,
+        [string]$CurrentUserSid
+    )
+
+    $normalPath = Get-NormalPath $Path
+    if (-not $normalPath -or [IO.Path]::GetExtension($normalPath) -ne '.json') {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportInvalid' `
+            -Detail 'PreviousRemoveReport must be a .json file path.' -Path ([string]$Path)
+    }
+    if (-not (Test-Path -LiteralPath $normalPath -PathType Leaf)) {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportMissing' `
+            -Detail 'The previous Remove report was not found.' -Path $normalPath
+    }
+    try { $bytes = [IO.File]::ReadAllBytes($normalPath) }
+    catch {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportUnreadable' `
+            -Detail ('The previous Remove report could not be read. ' + $_.Exception.Message) -Path $normalPath
+    }
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { $hash = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '') }
+    finally { $sha256.Dispose() }
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $report = $utf8.GetString($bytes) | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportUnreadable' `
+            -Detail ('The previous Remove report is not valid UTF-8 JSON. ' + $_.Exception.Message) `
+            -Path $normalPath -Hash $hash
+    }
+    if (-not ($report -is [Management.Automation.PSCustomObject])) {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportInvalid' `
+            -Detail 'The previous Remove report is not a JSON object.' -Path $normalPath -Hash $hash
+    }
+    $propertyNames = @($report.PSObject.Properties.Name)
+    if ($propertyNames -notcontains 'SchemaVersion' -or [string]$report.SchemaVersion -ne '2') {
+        $foundVersion = if ($propertyNames -contains 'SchemaVersion') { [string]$report.SchemaVersion } else { 'missing' }
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportIncompatible' `
+            -Detail ("The previous report uses SchemaVersion $foundVersion; this version reads SchemaVersion 2.") `
+            -Path $normalPath -Hash $hash
+    }
+    if ($propertyNames -notcontains 'Mode' -or [string]$report.Mode -cne 'Remove') {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportInvalid' `
+            -Detail 'The previous report is not a Remove report.' -Path $normalPath -Hash $hash
+    }
+    if ($propertyNames -notcontains 'Selection' -or $null -eq $report.Selection) {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'SelectionNotRecorded' `
+            -Detail 'The Remove report was created by an earlier version that did not record the selected and preserved targets.' `
+            -Path $normalPath -Hash $hash
+    }
+    $selection = $report.Selection
+    $selectionNames = @($selection.PSObject.Properties.Name)
+    foreach ($requiredName in @('SelectedTargets', 'PreservedTargets', 'ApprovedReportHash')) {
+        if ($selectionNames -notcontains $requiredName) {
+            return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportInvalid' `
+                -Detail "The Remove report selection is missing $requiredName." -Path $normalPath -Hash $hash
+        }
+    }
+    $topHash = if ($propertyNames -contains 'ApprovedReportHash') { [string]$report.ApprovedReportHash } else { '' }
+    if ($topHash -notmatch '^[0-9A-Fa-f]{64}$' -or
+        -not $topHash.Equals([string]$selection.ApprovedReportHash, [StringComparison]::OrdinalIgnoreCase)) {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportInvalid' `
+            -Detail 'The Remove report selection is not bound to its approved Scan report hash.' -Path $normalPath -Hash $hash
+    }
+    $allowedRemovalTypes = @('Path', 'RegistryKey', 'RegistryValue', 'Service', 'Task', 'Process', 'VendorUninstaller')
+    foreach ($record in @(@($selection.SelectedTargets) + @($selection.PreservedTargets))) {
+        if ($null -eq $record) { continue }
+        $recordNames = @($record.PSObject.Properties.Name)
+        $validRecord = $true
+        foreach ($recordName in @('Kind', 'Name', 'Target', 'ValueName', 'RemovalType', 'IdentityFingerprint')) {
+            if ($recordNames -notcontains $recordName) { $validRecord = $false }
+        }
+        if ($validRecord -and ([string]::IsNullOrWhiteSpace([string]$record.Kind) -or
+            [string]::IsNullOrWhiteSpace([string]$record.Target) -or
+            $allowedRemovalTypes -notcontains [string]$record.RemovalType)) {
+            $validRecord = $false
+        }
+        if (-not $validRecord) {
+            return New-360CleanupPreviousReportState -Usable $false -Reason 'RemoveReportInvalid' `
+                -Detail 'The Remove report contains an incomplete target record.' -Path $normalPath -Hash $hash
+        }
+    }
+    $approvalContext = if ($propertyNames -contains 'ApprovalContext') { $report.ApprovalContext } else { $null }
+    $reportSid = [string](Get-PropertyValue $approvalContext 'UserSid')
+    if ([string]::IsNullOrWhiteSpace($reportSid) -or
+        -not $reportSid.Equals([string]$CurrentUserSid, [StringComparison]::OrdinalIgnoreCase)) {
+        return New-360CleanupPreviousReportState -Usable $false -Reason 'DifferentUser' `
+            -Detail 'The Remove report belongs to a different Windows user. Sign in as that user to verify it.' `
+            -Path $normalPath -Hash $hash
+    }
+    return New-360CleanupPreviousReportState -Usable $true -Path $normalPath -Hash $hash -Report $report
+}
+
+function Get-360CleanupPathPresenceByListing {
+    param([string]$Path)
+
+    # Some providers report an inaccessible item as "not found". Only a readable parent listing that
+    # omits the exact name proves absence; anything else stays Unknown.
+    $current = Get-NormalPath $Path
+    if (-not $current) { return 'Unknown' }
+    $root = [IO.Path]::GetPathRoot($current)
+    for ($depth = 0; $depth -lt 64; $depth++) {
+        if ([string]::IsNullOrWhiteSpace($root) -or $current.Length -le $root.Length) { return 'Unknown' }
+        $parent = Get-NormalPath (Split-Path -Parent $current)
+        $leaf = Split-Path -Leaf $current
+        if (-not $parent -or [string]::IsNullOrWhiteSpace($leaf)) { return 'Unknown' }
+        try { $parentItem = Get-360CleanupPathItem $parent }
+        catch {
+            if (Test-IsPathNotFoundError $_) {
+                $current = $parent
+                continue
+            }
+            return 'Unknown'
+        }
+        if ($null -eq $parentItem -or @($parentItem.PSObject.Properties.Name) -notcontains 'PSIsContainer' -or
+            -not [bool]$parentItem.PSIsContainer) {
+            return 'Unknown'
+        }
+        try { $children = @(Get-360CleanupPathChildren $parent) }
+        catch { return 'Unknown' }
+        foreach ($child in $children) {
+            if ($null -eq $child) { return 'Unknown' }
+            $childName = [string](Get-PropertyValue $child 'Name')
+            if ([string]::IsNullOrWhiteSpace($childName)) {
+                $childName = Split-Path -Leaf ([string](Get-PropertyValue $child 'FullName'))
+            }
+            if ($childName -and $childName.Equals($leaf, [StringComparison]::OrdinalIgnoreCase)) { return 'Present' }
+        }
+        return 'Absent'
+    }
+    return 'Unknown'
+}
+
+function Get-360CleanupTargetProbe {
+    param(
+        [object]$Record,
+        [object]$ProbeContext = $null
+    )
+
+    # A non-administrator cannot see every scheduled task or service. When the approved Scan ran
+    # elevated (or its elevation is unknown), "not listed" is not proof that the resource is gone.
+    $limitedVisibility = $null -ne $ProbeContext -and -not [bool](Get-PropertyValue $ProbeContext 'IsAdministrator') -and
+        (Get-PropertyValue $ProbeContext 'ApprovedScanElevated') -ne $false
+    $removalType = [string](Get-PropertyValue $Record 'RemovalType')
+    if ($removalType -in @('Path', 'VendorUninstaller')) {
+        $target = Get-NormalPath ([string](Get-PropertyValue $Record 'Target'))
+        if (-not $target) {
+            return [pscustomobject]@{ State = 'Unknown'; Fingerprint = ''; Detail = 'The recorded path is not valid.' }
+        }
+        try {
+            $item = Get-360CleanupPathItem $target
+            if ($null -eq $item) {
+                return [pscustomobject]@{ State = 'Unknown'; Fingerprint = ''; Detail = 'Path inspection returned no item.' }
+            }
+            return [pscustomobject]@{ State = 'Present'; Fingerprint = ''; Detail = 'The exact path still exists.' }
+        }
+        catch {
+            $itemError = $_
+            if (Test-IsPathNotFoundError $itemError) {
+                $listingState = Get-360CleanupPathPresenceByListing $target
+                if ($listingState -eq 'Absent') {
+                    return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Detail = 'A readable parent listing confirmed the exact path is gone.' }
+                }
+                if ($listingState -eq 'Present') {
+                    return [pscustomobject]@{ State = 'Present'; Fingerprint = ''; Detail = 'The exact path is still listed by its parent folder.' }
+                }
+                return [pscustomobject]@{ State = 'Unknown'; Fingerprint = ''; Detail = 'The path was not found, but its parent folder could not be listed to prove absence.' }
+            }
+            return [pscustomobject]@{
+                State = 'Unknown'; Fingerprint = ''
+                Detail = ('The exact path could not be inspected. ' + $itemError.Exception.Message)
+            }
+        }
+    }
+    if ($removalType -in @('Service', 'Task', 'RegistryValue', 'RegistryKey')) {
+        $probeFinding = [pscustomobject]@{
+            Kind = [string](Get-PropertyValue $Record 'Kind'); Name = [string](Get-PropertyValue $Record 'Name')
+            Target = [string](Get-PropertyValue $Record 'Target'); Confidence = 'Confirmed'; Reason = ''
+            RemovalType = $removalType; ValueName = [string](Get-PropertyValue $Record 'ValueName')
+            IdentityFingerprint = [string](Get-PropertyValue $Record 'IdentityFingerprint'); Offline = $false
+        }
+        $identity = Get-360CleanupNonPathIdentityState $probeFinding
+        switch ([string]$identity.State) {
+            'Present' {
+                return [pscustomobject]@{ State = 'Present'; Fingerprint = [string]$identity.Fingerprint; Detail = 'The exact resource still exists.' }
+            }
+            'Absent' {
+                if ($limitedVisibility -and $removalType -eq 'Service') {
+                    $serviceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + [string](Get-PropertyValue $Record 'Target')
+                    if (-not (Test-360CleanupRegistryPath $serviceKey)) {
+                        return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Detail = 'The service is no longer registered.' }
+                    }
+                    return [pscustomobject]@{
+                        State = 'Unknown'; Fingerprint = ''
+                        Detail = 'The service is still registered but is not visible to this non-administrator check.'
+                    }
+                }
+                if ($limitedVisibility -and $removalType -eq 'Task') {
+                    return [pscustomobject]@{
+                        State = 'Unknown'; Fingerprint = ''
+                        Detail = 'The scheduled task is not listed, but tasks can be hidden from a non-administrator check. Verify again as administrator to prove removal.'
+                    }
+                }
+                return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Detail = 'A direct read-only query confirmed the exact resource is gone.' }
+            }
+            default {
+                return [pscustomobject]@{
+                    State = 'Unknown'; Fingerprint = ''
+                    Detail = ('The exact resource could not be queried. ' + [string]$identity.Detail)
+                }
+            }
+        }
+    }
+    if ($removalType -eq 'Process') {
+        $expected = Get-NormalPath ([string](Get-PropertyValue $Record 'ValueName'))
+        if (-not $expected) {
+            return [pscustomobject]@{ State = 'Unknown'; Fingerprint = ''; Detail = 'The recorded executable path is not valid.' }
+        }
+        try { $processes = @(Get-360CleanupProcessesStrict) }
+        catch {
+            return [pscustomobject]@{
+                State = 'Unknown'; Fingerprint = ''
+                Detail = ('The running-program list could not be read. ' + $_.Exception.Message)
+            }
+        }
+        $expectedLeaf = [IO.Path]::GetFileName($expected)
+        $unreadableSameName = $false
+        foreach ($process in $processes) {
+            $processPath = Get-NormalPath ([string](Get-PropertyValue $process 'ExecutablePath'))
+            if ($processPath -and $processPath.Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
+                return [pscustomobject]@{ State = 'Present'; Fingerprint = ''; Detail = 'A process from the exact executable path is running.' }
+            }
+            if (-not $processPath) {
+                $processName = [string](Get-PropertyValue $process 'Name')
+                if ($processName -and $processName.Equals($expectedLeaf, [StringComparison]::OrdinalIgnoreCase)) {
+                    $unreadableSameName = $true
+                }
+            }
+        }
+        if ($unreadableSameName) {
+            return [pscustomobject]@{
+                State = 'Unknown'; Fingerprint = ''
+                Detail = 'A process with the same file name is running, but its executable path could not be read.'
+            }
+        }
+        return [pscustomobject]@{ State = 'Absent'; Fingerprint = ''; Detail = 'No running process uses the exact executable path.' }
+    }
+    return [pscustomobject]@{ State = 'Unknown'; Fingerprint = ''; Detail = "Unsupported removal type: $removalType" }
+}
+
+function New-360CleanupItemStatus {
+    param(
+        [string]$Category,
+        [string]$State,
+        [object]$Record,
+        [string]$CurrentConfidence = '',
+        [string]$DetailCode = '',
+        [string]$Detail = ''
+    )
+
+    $productKey = [string](Get-PropertyValue $Record 'ProductKey')
+    return [pscustomobject]@{
+        Category          = $Category
+        State             = $State
+        Kind              = [string](Get-PropertyValue $Record 'Kind')
+        Name              = [string](Get-PropertyValue $Record 'Name')
+        Target            = [string](Get-PropertyValue $Record 'Target')
+        ValueName         = [string](Get-PropertyValue $Record 'ValueName')
+        RemovalType       = [string](Get-PropertyValue $Record 'RemovalType')
+        ProductKey        = $(if ([string]::IsNullOrWhiteSpace($productKey)) { 'Unattributed' } else { $productKey })
+        SelectionId       = [string](Get-PropertyValue $Record 'SelectionId')
+        CurrentConfidence = $CurrentConfidence
+        DetailCode        = $DetailCode
+        Detail            = $Detail
+    }
+}
+
+function Get-360CleanupTargetStatus {
+    param(
+        [object]$Record,
+        [hashtable]$CurrentByResource,
+        [string]$UserSid,
+        [ValidateSet('Selected', 'Preserved')]
+        [string]$Category,
+        [object]$ProbeContext = $null
+    )
+
+    $resourceKey = Get-FindingResourceKey -Finding $Record -UserSid $UserSid
+    $recordKey = ''
+    try { $recordKey = Get-FindingApprovalKey -Finding $Record -UserSid $UserSid }
+    catch { $recordKey = '' }
+    $resourceMatches = @()
+    if ($CurrentByResource.ContainsKey($resourceKey)) { $resourceMatches = @($CurrentByResource[$resourceKey]) }
+
+    $state = 'Unknown'
+    $detailCode = 'ProbeUnreadable'
+    $detail = ''
+    $currentConfidence = ''
+    if ($resourceMatches.Count -gt 0) {
+        $sameIdentity = @($resourceMatches | Where-Object {
+            $_.Confidence -eq 'Confirmed' -and -not [bool]$_.Offline -and [string]$_.RemovalType -ne 'None' -and
+                $recordKey -and ((Get-360CleanupRecordIdentityKey -Record $_ -UserSid $UserSid) -eq $recordKey)
+        })
+        if ($sameIdentity.Count -gt 0) {
+            $state = 'Remaining'; $detailCode = 'DetectedSameIdentity'; $currentConfidence = 'Confirmed'
+            $detail = 'The current scan still detects this exact target with the same identity.'
+        }
+        else {
+            $state = 'Changed'; $detailCode = 'DetectedDifferentIdentity'
+            $currentConfidence = [string]$resourceMatches[0].Confidence
+            $detail = ('The resource is still present, but its identity or detection result changed (current result: {0}).' -f $currentConfidence)
+        }
+    }
+    else {
+        $probe = Get-360CleanupTargetProbe -Record $Record -ProbeContext $ProbeContext
+        $removalType = [string]$Record.RemovalType
+        switch ([string]$probe.State) {
+            'Absent' {
+                $state = 'Absent'; $detailCode = 'ProbeAbsent'; $detail = [string]$probe.Detail
+            }
+            'Present' {
+                $detailCode = 'PresentNotDetected'
+                if ($removalType -in @('Path', 'VendorUninstaller')) {
+                    $state = 'Changed'; $detailCode = 'PathPresentNotDetected'
+                    $detail = 'The exact path still exists but no longer matches the detection rule (it may be partly removed).'
+                }
+                elseif ($removalType -eq 'Process') {
+                    $state = 'Remaining'
+                    $detail = 'A program from the exact executable path is still running.'
+                }
+                elseif ([string]$probe.Fingerprint -and
+                    ([string]$probe.Fingerprint).Equals([string]$Record.IdentityFingerprint, [StringComparison]::Ordinal)) {
+                    $state = 'Remaining'
+                    $detail = 'The exact resource still exists with the same identity, although the current scan no longer flags it.'
+                }
+                else {
+                    $state = 'Changed'
+                    $detail = 'A resource with the same name exists, but its identity changed.'
+                }
+            }
+            default {
+                $state = 'Unknown'
+                $detailCode = if ($removalType -in @('Service', 'Task', 'Process')) { 'QueryFailed' } else { 'ProbeUnreadable' }
+                $detail = [string]$probe.Detail
+            }
+        }
+    }
+    if ($Category -eq 'Preserved' -and $state -eq 'Remaining') { $state = 'Present' }
+    return New-360CleanupItemStatus -Category $Category -State $state -Record $Record `
+        -CurrentConfidence $currentConfidence -DetailCode $detailCode -Detail $detail
+}
+
+function Get-360CleanupTaskVerification {
+    param(
+        [object]$Previous,
+        [object[]]$CurrentFindings,
+        [string]$UserSid
+    )
+
+    $counts = [ordered]@{
+        SelectedTotal = 0; SelectedAbsent = 0; SelectedRemaining = 0; SelectedChanged = 0; SelectedUnknown = 0
+        PreservedTotal = 0; PreservedPresent = 0; PreservedAbsent = 0; PreservedChanged = 0; PreservedUnknown = 0
+        NewConfirmed = 0
+    }
+    $result = [ordered]@{
+        Status = 'Unavailable'; UnavailableReason = ''; UnavailableDetail = ''
+        RemoveReportPath = [string]$Previous.Path; RemoveReportHash = [string]$Previous.Hash
+        RemoveReportTimestamp = ''; RemoveToolVersion = ''; ApprovedReportHash = ''; SelectionApplied = $false
+        Counts = $null; Selected = @(); Preserved = @(); New = @()
+    }
+    if (-not [bool]$Previous.Usable) {
+        $result.UnavailableReason = [string]$Previous.Reason
+        $result.UnavailableDetail = [string]$Previous.Detail
+        $result.Counts = [pscustomobject]$counts
+        return [pscustomobject]$result
+    }
+
+    $report = $Previous.Report
+    $selection = $report.Selection
+    $result.RemoveReportTimestamp = [string](Get-PropertyValue $report 'Timestamp')
+    $result.RemoveToolVersion = [string](Get-PropertyValue $report 'ToolVersion')
+    $result.ApprovedReportHash = [string](Get-PropertyValue $report 'ApprovedReportHash')
+    $result.SelectionApplied = [bool](Get-PropertyValue $selection 'SelectionApplied')
+
+    $currentByResource = @{}
+    foreach ($finding in @($CurrentFindings)) {
+        if ($null -eq $finding) { continue }
+        $resourceKey = Get-FindingResourceKey -Finding $finding -UserSid $UserSid
+        if (-not $currentByResource.ContainsKey($resourceKey)) {
+            $currentByResource[$resourceKey] = New-Object System.Collections.ArrayList
+        }
+        [void]$currentByResource[$resourceKey].Add($finding)
+    }
+
+    $probeContext = [pscustomobject]@{
+        IsAdministrator      = [bool](Test-IsAdministrator)
+        ApprovedScanElevated = Get-PropertyValue $selection 'ApprovedScanElevated'
+    }
+    $knownResources = @{}
+    $knownPathRoots = New-Object System.Collections.ArrayList
+    $selectedStatuses = New-Object System.Collections.ArrayList
+    foreach ($record in @($selection.SelectedTargets)) {
+        if ($null -eq $record) { continue }
+        $knownResources[(Get-FindingResourceKey -Finding $record -UserSid $UserSid)] = $true
+        if ([string]$record.RemovalType -in @('Path', 'VendorUninstaller')) { [void]$knownPathRoots.Add([string]$record.Target) }
+        [void]$selectedStatuses.Add((Get-360CleanupTargetStatus -Record $record -CurrentByResource $currentByResource `
+            -UserSid $UserSid -Category 'Selected' -ProbeContext $probeContext))
+    }
+    $preservedStatuses = New-Object System.Collections.ArrayList
+    foreach ($record in @($selection.PreservedTargets)) {
+        if ($null -eq $record) { continue }
+        $knownResources[(Get-FindingResourceKey -Finding $record -UserSid $UserSid)] = $true
+        if ([string]$record.RemovalType -in @('Path', 'VendorUninstaller')) { [void]$knownPathRoots.Add([string]$record.Target) }
+        [void]$preservedStatuses.Add((Get-360CleanupTargetStatus -Record $record -CurrentByResource $currentByResource `
+            -UserSid $UserSid -Category 'Preserved' -ProbeContext $probeContext))
+    }
+    $newStatuses = New-Object System.Collections.ArrayList
+    $newKeys = @{}
+    foreach ($finding in @($CurrentFindings)) {
+        if ($null -eq $finding -or $finding.Confidence -ne 'Confirmed' -or [bool]$finding.Offline -or
+            [string]$finding.RemovalType -eq 'None') { continue }
+        if ($knownResources.ContainsKey((Get-FindingResourceKey -Finding $finding -UserSid $UserSid))) { continue }
+        # A running program or file inside a selected or deliberately kept folder belongs to that item
+        # (for example the kept browser opened again after the restart); it is not a new finding.
+        $containedTarget = switch ([string]$finding.Kind) {
+            'Process' { [string]$finding.ValueName; break }
+            'Path' { [string]$finding.Target; break }
+            'VendorUninstaller' { [string]$finding.Target; break }
+            default { '' }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($containedTarget) -and
+            @($knownPathRoots | Where-Object { Test-IsUnderPath -Candidate $containedTarget -Root $_ }).Count -gt 0) { continue }
+        $identityKey = Get-360CleanupRecordIdentityKey -Record $finding -UserSid $UserSid
+        if ($newKeys.ContainsKey($identityKey)) { continue }
+        $newKeys[$identityKey] = $true
+        [void]$newStatuses.Add((New-360CleanupItemStatus -Category 'New' -State 'New' -Record $finding `
+            -CurrentConfidence 'Confirmed' -DetailCode 'NewFinding' `
+            -Detail 'This confirmed finding was neither selected nor deliberately preserved in the verified cleanup task.'))
+    }
+
+    $counts.SelectedTotal = $selectedStatuses.Count
+    $counts.SelectedAbsent = @($selectedStatuses | Where-Object { $_.State -eq 'Absent' }).Count
+    $counts.SelectedRemaining = @($selectedStatuses | Where-Object { $_.State -eq 'Remaining' }).Count
+    $counts.SelectedChanged = @($selectedStatuses | Where-Object { $_.State -eq 'Changed' }).Count
+    $counts.SelectedUnknown = @($selectedStatuses | Where-Object { $_.State -eq 'Unknown' }).Count
+    $counts.PreservedTotal = $preservedStatuses.Count
+    $counts.PreservedPresent = @($preservedStatuses | Where-Object { $_.State -eq 'Present' }).Count
+    $counts.PreservedAbsent = @($preservedStatuses | Where-Object { $_.State -eq 'Absent' }).Count
+    $counts.PreservedChanged = @($preservedStatuses | Where-Object { $_.State -eq 'Changed' }).Count
+    $counts.PreservedUnknown = @($preservedStatuses | Where-Object { $_.State -eq 'Unknown' }).Count
+    $counts.NewConfirmed = $newStatuses.Count
+
+    $result.Status = if (($counts.SelectedRemaining + $counts.SelectedChanged) -gt 0) {
+        'Remaining'
+    }
+    elseif ($counts.SelectedUnknown -gt 0) { 'Unknown' }
+    else { 'Completed' }
+    $result.Counts = [pscustomobject]$counts
+    $result.Selected = @($selectedStatuses)
+    $result.Preserved = @($preservedStatuses)
+    $result.New = @($newStatuses)
+    return [pscustomobject]$result
+}
+
+function Get-360CleanupVerifyExitCode {
+    param(
+        [object[]]$Findings,
+        [object]$Coverage,
+        [object]$TaskVerification = $null
+    )
+
+    $coverageComplete = $null -ne $Coverage -and [bool]$Coverage.Complete
+    $confirmedCount = @($Findings | Where-Object { $null -ne $_ -and $_.Confidence -eq 'Confirmed' }).Count
+    $globalCode = if ($confirmedCount -gt 0) { 2 } elseif (-not $coverageComplete) { 3 } else { 0 }
+    if ($null -eq $TaskVerification) { return $globalCode }
+    switch ([string]$TaskVerification.Status) {
+        'Remaining' { return 2 }
+        'Unknown' { return 3 }
+        'Completed' {
+            if ([int]$TaskVerification.Counts.NewConfirmed -gt 0) { return 4 }
+            if (-not $coverageComplete) { return 3 }
+            return 0
+        }
+        default {
+            if ($globalCode -eq 0) { return 3 }
+            return $globalCode
+        }
+    }
+}
+
+function Show-TaskVerification {
+    param([object]$TaskVerification)
+
+    if ($null -eq $TaskVerification) { return }
+    Write-Host ''
+    Write-Host ('Cleanup task verification: {0}' -f $TaskVerification.Status) -ForegroundColor Cyan
+    if ([string]$TaskVerification.Status -eq 'Unavailable') {
+        Write-Warning ('The previous Remove report could not be used ({0}): {1}' -f `
+            $TaskVerification.UnavailableReason, $TaskVerification.UnavailableDetail)
+        return
+    }
+    $counts = $TaskVerification.Counts
+    Write-Host ('Selected targets: {0}; confirmed absent: {1}; still present: {2}; changed: {3}; unknown: {4}' -f `
+        $counts.SelectedTotal, $counts.SelectedAbsent, $counts.SelectedRemaining, $counts.SelectedChanged, $counts.SelectedUnknown)
+    Write-Host ('Preserved by choice: {0}; still present: {1}; absent: {2}; changed: {3}; unknown: {4}' -f `
+        $counts.PreservedTotal, $counts.PreservedPresent, $counts.PreservedAbsent, $counts.PreservedChanged, $counts.PreservedUnknown)
+    Write-Host ('New confirmed findings outside this task: {0}' -f $counts.NewConfirmed)
+    $attention = @(@($TaskVerification.Selected) + @($TaskVerification.Preserved) + @($TaskVerification.New) | Where-Object {
+        $null -ne $_ -and $_.State -notin @('Absent', 'Present')
+    })
+    if ($attention.Count -gt 0) {
+        $attentionText = $attention | Select-Object Category, State, Kind, Name, Target, Detail |
+            Format-Table -AutoSize -Wrap | Out-String
+        Write-Host ($attentionText.TrimEnd())
+    }
+}
+
 function Invoke-ElevatedCleanup {
     param(
         [string]$ScriptPath,
@@ -4084,7 +5134,8 @@ function Invoke-ElevatedCleanup {
         [bool]$IncludeBrowserProfiles = $false,
         [bool]$AllowExplorerRestart = $false,
         [bool]$ForceLockedTargets = $false,
-        [bool]$IncludeIdentityInReport = $false
+        [bool]$IncludeIdentityInReport = $false,
+        [string]$ElevatedProgressPath = ''
     )
 
     $argumentLine = New-ElevatedCleanupArgumentLine -ScriptPath $ScriptPath `
@@ -4092,20 +5143,32 @@ function Invoke-ElevatedCleanup {
         -OutcomeRunId $OutcomeRunId -SelectedFindingIds $SelectedFindingIds `
         -SelectionApplied:$SelectionApplied -ReportPath $ReportPath `
         -IncludeBrowserProfiles:$IncludeBrowserProfiles -AllowExplorerRestart:$AllowExplorerRestart `
-        -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport
+        -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport `
+        -ElevatedProgressPath $ElevatedProgressPath
+    Write-360CleanupProgress 'WaitingForElevation'
+    $elevationStarted = $false
     try {
-        $process = Start-360CleanupElevatedProcess -FilePath 'powershell.exe' -ArgumentLine $argumentLine
+        $process = Start-360CleanupElevatedProcess -FilePath 'powershell.exe' -ArgumentLine $argumentLine `
+            -HideWindow (-not [string]::IsNullOrWhiteSpace($ElevatedProgressPath))
+        $elevationStarted = $true
         if ($null -eq $process -or @($process.PSObject.Properties.Name) -notcontains 'ExitCode') {
             throw 'The elevated cleanup process did not return an exit code.'
         }
         $childExitCode = [int]$process.ExitCode
     }
     catch {
+        if (-not $elevationStarted -and (Test-360CleanupElevationCancelled $_)) {
+            Write-360CleanupProgress 'ElevationCancelled'
+        }
+        else {
+            Write-360CleanupProgress 'ElevationFailed' $_.Exception.Message
+        }
         Write-Error ('Cleanup elevation was cancelled or failed. No removal success is being reported. ' +
             $_.Exception.Message) -ErrorAction Continue
         return 5
     }
 
+    Write-360CleanupProgress 'ReadingOutcome'
     $outcomeDisplayed = $false
     if (Test-Path -LiteralPath $ReportPath -PathType Leaf) {
         try {
@@ -4141,7 +5204,8 @@ function Invoke-360CleanupRemoveElevationBoundary {
         [bool]$IncludeBrowserProfiles = $false,
         [bool]$AllowExplorerRestart = $false,
         [bool]$ForceLockedTargets = $false,
-        [bool]$IncludeIdentityInReport = $false
+        [bool]$IncludeIdentityInReport = $false,
+        [string]$ElevatedProgressPath = ''
     )
 
     $isAdministrator = Test-IsAdministrator
@@ -4157,7 +5221,8 @@ function Invoke-360CleanupRemoveElevationBoundary {
         -OutcomeRunId $OutcomeRunId -SelectedFindingIds $SelectedFindingIds `
         -SelectionApplied:$SelectionApplied -ReportPath $ReportPath `
         -IncludeBrowserProfiles:$IncludeBrowserProfiles -AllowExplorerRestart:$AllowExplorerRestart `
-        -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport
+        -ForceLockedTargets:$ForceLockedTargets -IncludeIdentityInReport:$IncludeIdentityInReport `
+        -ElevatedProgressPath $ElevatedProgressPath
     return [pscustomobject]@{ Handled = $true; ExitCode = [int]$elevatedExitCode }
 }
 
@@ -4168,198 +5233,262 @@ if ($InternalTestLibraryOnly) {
     return
 }
 
-if ($InternalElevatedChild -and $Mode -ne 'Remove') {
-    throw 'InternalElevatedChild is valid only for Remove mode.'
-}
+try {
+    $script:ProgressToStdout = [bool]$EmitProgress
 
-$selectionApplied = $PSBoundParameters.ContainsKey('SelectedFindingIds')
-$selectedFindingIdList = @()
-if ($selectionApplied -and $Mode -ne 'Remove') {
-    throw 'SelectedFindingIds is valid only for Remove mode.'
-}
+    if ($InternalElevatedChild -and $Mode -ne 'Remove') {
+        throw 'InternalElevatedChild is valid only for Remove mode.'
+    }
 
-if ($OfflineWindowsRoot -and $Mode -eq 'Remove') {
-    throw 'OfflineWindowsRoot is scan-only. Remove from an offline Windows installation requires a separate, explicit workflow.'
-}
-
-$approvedInput = $null
-if ($Mode -eq 'Remove') {
-    if ($selectionApplied) {
-        $selectedFindingIdList = @(ConvertFrom-CleanupSelectionIds -Value $SelectedFindingIds)
-        $SelectedFindingIds = $selectedFindingIdList -join ';'
+    $selectionApplied = $PSBoundParameters.ContainsKey('SelectedFindingIds')
+    $selectedFindingIdList = @()
+    if ($selectionApplied -and $Mode -ne 'Remove') {
+        throw 'SelectedFindingIds is valid only for Remove mode.'
     }
-    if ([string]::IsNullOrWhiteSpace($ApprovedReport)) {
-        throw 'Removal requires -ApprovedReport pointing to the reviewed SchemaVersion 2 Scan report.'
+    if ($PSBoundParameters.ContainsKey('PreviousRemoveReport') -and $Mode -ne 'Verify') {
+        throw 'PreviousRemoveReport is valid only for Verify mode.'
     }
-    if (-not $ConfirmRemoval) {
-        throw 'Removal requires -ConfirmRemoval after the user has reviewed the scan.'
-    }
-    if ($ConfirmationPhrase -cne 'REMOVE-CONFIRMED-360') {
-        throw 'Removal requires the exact phrase: -ConfirmationPhrase REMOVE-CONFIRMED-360'
-    }
-    if ($IncludeBrowserProfiles -and $BrowserProfileConfirmation -cne 'DELETE-360-BROWSER-DATA') {
-        throw 'Deleting browser profiles requires the separate exact phrase: -BrowserProfileConfirmation DELETE-360-BROWSER-DATA'
-    }
-    if ($InternalElevatedChild -and [string]::IsNullOrWhiteSpace($ApprovedReportHash)) {
-        throw 'The elevated cleanup child requires ApprovedReportHash.'
-    }
-    if ($InternalElevatedChild) {
-        if ($OutcomeRunId -notmatch '^[0-9a-fA-F]{32}$') {
-            throw 'The elevated cleanup child requires a valid OutcomeRunId.'
+    if ($PSBoundParameters.ContainsKey('ElevatedProgressPath')) {
+        if ($Mode -ne 'Remove') {
+            throw 'ElevatedProgressPath is valid only for Remove mode.'
+        }
+        if (-not (Test-360CleanupProgressPathFormat $ElevatedProgressPath)) {
+            throw 'ElevatedProgressPath must be an absolute path to a new windows-360-cleaner-progress-<32 lowercase hex>.log file.'
+        }
+        if ($InternalElevatedChild) {
+            # Open first so that any later validation failure is still visible to the guided UI.
+            $script:ProgressStream = Open-360CleanupProgressFile $ElevatedProgressPath
+            Write-360CleanupProgress 'ElevatedStarted'
         }
     }
+
+    if ($OfflineWindowsRoot -and $Mode -eq 'Remove') {
+        throw 'OfflineWindowsRoot is scan-only. Remove from an offline Windows installation requires a separate, explicit workflow.'
+    }
+
+    $approvedInput = $null
+    if ($Mode -eq 'Remove') {
+        if (-not $InternalElevatedChild) { Write-360CleanupProgress 'ValidatingApproval' }
+        if ($selectionApplied) {
+            $selectedFindingIdList = @(ConvertFrom-CleanupSelectionIds -Value $SelectedFindingIds)
+            $SelectedFindingIds = $selectedFindingIdList -join ';'
+        }
+        if ([string]::IsNullOrWhiteSpace($ApprovedReport)) {
+            throw 'Removal requires -ApprovedReport pointing to the reviewed SchemaVersion 2 Scan report.'
+        }
+        if (-not $ConfirmRemoval) {
+            throw 'Removal requires -ConfirmRemoval after the user has reviewed the scan.'
+        }
+        if ($ConfirmationPhrase -cne 'REMOVE-CONFIRMED-360') {
+            throw 'Removal requires the exact phrase: -ConfirmationPhrase REMOVE-CONFIRMED-360'
+        }
+        if ($IncludeBrowserProfiles -and $BrowserProfileConfirmation -cne 'DELETE-360-BROWSER-DATA') {
+            throw 'Deleting browser profiles requires the separate exact phrase: -BrowserProfileConfirmation DELETE-360-BROWSER-DATA'
+        }
+        if ($InternalElevatedChild -and [string]::IsNullOrWhiteSpace($ApprovedReportHash)) {
+            throw 'The elevated cleanup child requires ApprovedReportHash.'
+        }
+        if ($InternalElevatedChild) {
+            if ($OutcomeRunId -notmatch '^[0-9a-fA-F]{32}$') {
+                throw 'The elevated cleanup child requires a valid OutcomeRunId.'
+            }
+        }
+        else {
+            $OutcomeRunId = [Guid]::NewGuid().ToString('N')
+        }
+
+        $approvedInput = Read-ApprovedCleanupReport -Path $ApprovedReport -ExpectedHash $ApprovedReportHash
+        $ApprovedReport = $approvedInput.Path
+        $ApprovedReportHash = $approvedInput.Hash
+        if (-not $InternalElevatedChild) {
+            Assert-CleanupApprovalContextMatchesCaller -ApprovalContext $approvedInput.Report.ApprovalContext
+        }
+        Set-CleanupSourceContext -ApprovalContext $approvedInput.Report.ApprovalContext
+        if ($selectionApplied) {
+            Assert-ApprovedSelectionIds -Approved @($approvedInput.Report.Findings) `
+                -SelectedIds $selectedFindingIdList -UserSid ([string]$approvedInput.Report.ApprovalContext.UserSid)
+        }
+
+        $approvedBrowserProfiles = [bool]$approvedInput.Report.ApprovalContext.Options.IncludeBrowserProfiles
+        if ($IncludeBrowserProfiles -and -not $approvedBrowserProfiles) {
+            throw 'IncludeBrowserProfiles requires a Scan report created with the same option.'
+        }
+    }
+
+    if (-not $ReportPath) {
+        $reportDirectory = $script:KnownFolders.Desktop
+        if (-not $reportDirectory) { $reportDirectory = $script:KnownFolders.Temp }
+        $ReportPath = Join-Path $reportDirectory ('360-cleanup-report-{0:yyyyMMdd-HHmmss}-{1}.json' -f (Get-Date), ([Guid]::NewGuid().ToString('N').Substring(0, 8)))
+    }
+    $ReportPath = Assert-SafeReportPath $ReportPath
+
+    if ($Mode -eq 'Remove') {
+        $elevationBoundary = Invoke-360CleanupRemoveElevationBoundary -ScriptPath $PSCommandPath `
+            -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
+            -OutcomeRunId $OutcomeRunId -SelectedFindingIds $SelectedFindingIds `
+            -SelectionApplied:$selectionApplied -ReportPath $ReportPath `
+            -InternalElevatedChild:$InternalElevatedChild -IncludeBrowserProfiles:$IncludeBrowserProfiles `
+            -AllowExplorerRestart:$AllowExplorerRestart -ForceLockedTargets:$ForceLockedTargets `
+            -IncludeIdentityInReport:$IncludeIdentityInReport -ElevatedProgressPath $ElevatedProgressPath
+        if ($elevationBoundary.Handled) {
+            exit $elevationBoundary.ExitCode
+        }
+        Write-360CleanupProgress 'RescanBeforeRemoval'
+    }
+
+    Write-Host "Windows 360 Cleaner $script:ToolVersion - $Mode" -ForegroundColor Cyan
+    $initialFindings = @(Get-360Findings -OfflineRoot $OfflineWindowsRoot -IncludeProfiles:$IncludeBrowserProfiles)
+    $initialCoverage = Get-360ScanCoverage
+    $selectionSid = if ($Mode -eq 'Remove') {
+        [string]$approvedInput.Report.ApprovalContext.UserSid
+    }
     else {
-        $OutcomeRunId = [Guid]::NewGuid().ToString('N')
+        [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    }
+    $initialFindings = @(Add-CleanupSelectionIds -Findings $initialFindings -UserSid $selectionSid)
+    Show-Findings $initialFindings -Coverage $initialCoverage
+
+    if ($Mode -eq 'Scan') {
+        $approvalContext = New-CleanupApprovalContext -IncludeBrowserProfiles:$IncludeBrowserProfiles
+        Write-360CleanupProgress 'SavingReport'
+        Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $initialFindings -Actions @() `
+            -ApprovalContext $approvalContext -IncludeIdentity:$IncludeIdentityInReport -ScanCoverage $initialCoverage
+        Write-Host "Report: $ReportPath" -ForegroundColor Cyan
+        Write-360CleanupProgress 'Done' '0'
+        exit 0
     }
 
-    $approvedInput = Read-ApprovedCleanupReport -Path $ApprovedReport -ExpectedHash $ApprovedReportHash
-    $ApprovedReport = $approvedInput.Path
-    $ApprovedReportHash = $approvedInput.Hash
-    if (-not $InternalElevatedChild) {
-        Assert-CleanupApprovalContextMatchesCaller -ApprovalContext $approvedInput.Report.ApprovalContext
+    if ($Mode -eq 'Verify') {
+        # Verify is strictly read-only. A previous Remove report is evidence to compare against,
+        # never an approval to continue deleting anything.
+        $taskVerification = $null
+        if ($PSBoundParameters.ContainsKey('PreviousRemoveReport')) {
+            Write-360CleanupProgress 'VerifyReadingPreviousReport'
+            $previousRemove = Read-360CleanupPreviousRemoveReport -Path $PreviousRemoveReport -CurrentUserSid $selectionSid
+            Write-360CleanupProgress 'VerifyCheckingTargets'
+            $taskVerification = Get-360CleanupTaskVerification -Previous $previousRemove `
+                -CurrentFindings $initialFindings -UserSid $selectionSid
+        }
+        Write-360CleanupProgress 'SavingReport'
+        Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $initialFindings -Actions @() `
+            -IncludeIdentity:$IncludeIdentityInReport -ScanCoverage $initialCoverage `
+            -TaskVerification $taskVerification -IncludeTaskVerification $true
+        Show-TaskVerification $taskVerification
+        $verifyExitCode = Get-360CleanupVerifyExitCode -Findings $initialFindings -Coverage $initialCoverage `
+            -TaskVerification $taskVerification
+        $confirmedCount = @($initialFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
+        switch ($verifyExitCode) {
+            0 {
+                if ($null -ne $taskVerification) {
+                    Write-Host "Verification passed: every selected target was confirmed absent and no new confirmed findings were found. Report: $ReportPath" -ForegroundColor Green
+                }
+                else {
+                    Write-Host "Verification passed. Report: $ReportPath" -ForegroundColor Green
+                }
+            }
+            2 {
+                if ($null -ne $taskVerification -and [string]$taskVerification.Status -eq 'Remaining') {
+                    Write-Warning "Selected cleanup target(s) are still present or changed. Report: $ReportPath"
+                }
+                else {
+                    Write-Warning "$confirmedCount confirmed finding(s) remain. Report: $ReportPath"
+                }
+            }
+            4 {
+                Write-Warning "Selected targets were confirmed absent, but new confirmed finding(s) appeared outside this task. Report: $ReportPath"
+            }
+            default {
+                Write-Warning "Verification is incomplete: some targets or checks could not be confirmed. Report: $ReportPath"
+            }
+        }
+        Write-360CleanupProgress 'Done' ([string]$verifyExitCode)
+        exit $verifyExitCode
     }
-    Set-CleanupSourceContext -ApprovalContext $approvedInput.Report.ApprovalContext
-    if ($selectionApplied) {
-        Assert-ApprovedSelectionIds -Approved @($approvedInput.Report.Findings) `
-            -SelectedIds $selectedFindingIdList -UserSid ([string]$approvedInput.Report.ApprovalContext.UserSid)
+
+    Write-360CleanupProgress 'ResolvingSelection'
+    $approvalComparison = Compare-ApprovedCleanupFindings -Approved @($approvedInput.Report.Findings) `
+        -Current $initialFindings -SID ([string]$approvedInput.Report.ApprovalContext.UserSid)
+    $resolvedSelection = Resolve-CleanupSelection -Approved @($approvedInput.Report.Findings) `
+        -Eligible @($approvalComparison.Eligible) -Current $initialFindings -SelectedIds $selectedFindingIdList `
+        -UserSid ([string]$approvedInput.Report.ApprovalContext.UserSid) -SelectionApplied:$selectionApplied
+    $selectionRecord = New-360CleanupSelectionRecord -SelectionApplied $selectionApplied `
+        -ApprovedReportPath $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
+        -SelectedIds $selectedFindingIdList -ResolvedSelection $resolvedSelection `
+        -ApprovalComparison $approvalComparison -UserSid $selectionSid `
+        -ApprovedScanElevated (Get-PropertyValue $approvedInput.Report 'RunElevated')
+    $removalSummary = [ordered]@{}
+    $actions = @(Remove-ConfirmedFindings -Findings @($resolvedSelection.Eligible) -AllowExplorerRestart:$AllowExplorerRestart `
+        -ForceLockedTargets:$ForceLockedTargets -Summary $removalSummary)
+    $remainingFindings = @()
+    $rescanComplete = $false
+    if ([bool]$removalSummary.PostVendorMutationBlocked) {
+        $remainingFindings = @($initialFindings)
+        $removalCoverage = Get-360ScanCoverage -AdditionalIssues @([pscustomobject]@{
+            Area   = 'ImmediateRescan'
+            Target = ''
+            Detail = 'The immediate remaining-state rescan was blocked after the vendor-uninstaller phase.'
+        })
     }
-
-    $approvedBrowserProfiles = [bool]$approvedInput.Report.ApprovalContext.Options.IncludeBrowserProfiles
-    if ($IncludeBrowserProfiles -and -not $approvedBrowserProfiles) {
-        throw 'IncludeBrowserProfiles requires a Scan report created with the same option.'
+    else {
+        Write-360CleanupProgress 'RescanAfterRemoval'
+        $remainingFindings = @(Get-360Findings -IncludeProfiles:$IncludeBrowserProfiles)
+        $removalCoverage = Get-360ScanCoverage
+        $remainingFindings = @(Add-CleanupSelectionIds -Findings $remainingFindings -UserSid $selectionSid)
+        $rescanComplete = $true
     }
-}
+    $remainingSelected = Complete-360CleanupRemovalSummary -Summary $removalSummary `
+        -ApprovalComparison $approvalComparison -ResolvedSelection $resolvedSelection `
+        -SelectionRecord $selectionRecord -SelectionApplied $selectionApplied -RescanComplete $rescanComplete `
+        -RemainingFindings $remainingFindings -UserSid $selectionSid -ApprovedReportHash $ApprovedReportHash
+    Write-360CleanupProgress 'SavingReport'
+    Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $remainingFindings -Actions $actions `
+        -Summary $removalSummary -ApprovalContext $approvedInput.Report.ApprovalContext `
+        -ApprovedReportHash $ApprovedReportHash -OutcomeRunId $OutcomeRunId `
+        -IncludeIdentity:$IncludeIdentityInReport -ScanCoverage $removalCoverage -Selection $selectionRecord
 
-if (-not $ReportPath) {
-    $reportDirectory = $script:KnownFolders.Desktop
-    if (-not $reportDirectory) { $reportDirectory = $script:KnownFolders.Temp }
-    $ReportPath = Join-Path $reportDirectory ('360-cleanup-report-{0:yyyyMMdd-HHmmss}-{1}.json' -f (Get-Date), ([Guid]::NewGuid().ToString('N').Substring(0, 8)))
-}
-$ReportPath = Assert-SafeReportPath $ReportPath
-
-if ($Mode -eq 'Remove') {
-    $elevationBoundary = Invoke-360CleanupRemoveElevationBoundary -ScriptPath $PSCommandPath `
-        -ApprovedReport $ApprovedReport -ApprovedReportHash $ApprovedReportHash `
-        -OutcomeRunId $OutcomeRunId -SelectedFindingIds $SelectedFindingIds `
-        -SelectionApplied:$selectionApplied -ReportPath $ReportPath `
-        -InternalElevatedChild:$InternalElevatedChild -IncludeBrowserProfiles:$IncludeBrowserProfiles `
-        -AllowExplorerRestart:$AllowExplorerRestart -ForceLockedTargets:$ForceLockedTargets `
-        -IncludeIdentityInReport:$IncludeIdentityInReport
-    if ($elevationBoundary.Handled) {
-        exit $elevationBoundary.ExitCode
+    Write-Host ''
+    Write-Host 'Removal actions:' -ForegroundColor Cyan
+    $actions | Format-Table Time, Action, Target, Result, Detail -AutoSize -Wrap
+    Show-RemovalSummary $removalSummary
+    Write-Host ''
+    if ([bool]$removalSummary.ImmediateRescanComplete) {
+        Write-Host 'Remaining findings:' -ForegroundColor Cyan
     }
-}
-
-Write-Host "Windows 360 Cleaner - $Mode" -ForegroundColor Cyan
-$initialFindings = @(Get-360Findings -OfflineRoot $OfflineWindowsRoot -IncludeProfiles:$IncludeBrowserProfiles)
-$selectionSid = if ($Mode -eq 'Remove') {
-    [string]$approvedInput.Report.ApprovalContext.UserSid
-}
-else {
-    [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-}
-$initialFindings = @(Add-CleanupSelectionIds -Findings $initialFindings -UserSid $selectionSid)
-Show-Findings $initialFindings
-
-if ($Mode -eq 'Scan') {
-    $approvalContext = New-CleanupApprovalContext -IncludeBrowserProfiles:$IncludeBrowserProfiles
-    Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $initialFindings -Actions @() `
-        -ApprovalContext $approvalContext -IncludeIdentity:$IncludeIdentityInReport
+    else {
+        Write-Warning 'Findings below are the last safe pre-mutation snapshot, not proof of current remaining state.'
+        Write-Host 'Last safe pre-mutation findings:' -ForegroundColor Cyan
+    }
+    Show-Findings $remainingFindings -Coverage $removalCoverage
     Write-Host "Report: $ReportPath" -ForegroundColor Cyan
-    exit 0
-}
 
-if ($Mode -eq 'Verify') {
-    Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $initialFindings -Actions @() -IncludeIdentity:$IncludeIdentityInReport
-    $confirmedCount = @($initialFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
-    if ($confirmedCount -gt 0) {
-        Write-Warning "$confirmedCount confirmed finding(s) remain. Report: $ReportPath"
+    if (Test-RemovalOutcomeRequiresAttention -Summary $removalSummary -RemainingConfirmed $remainingSelected) {
+        $remainingConfirmedText = if ([bool]$removalSummary.ImmediateRescanComplete) {
+            [string]$remainingSelected
+        }
+        else { 'unknown (immediate rescan blocked)' }
+        $remainingLabel = if ($selectionApplied) { 'selected target(s) not proven removed' } else { 'confirmed finding(s)' }
+        $attentionMessage = ("Cleanup requires attention: {0} {1} remain, {2} path target(s) are unresolved, " +
+            "{3} ACL repair(s) failed, and path accounting complete is {4}. Reboot and run Verify; do not broaden deletion without review.") -f `
+            $remainingConfirmedText, $remainingLabel, $removalSummary.UnresolvedPathTargets, $removalSummary.AclRepairFailures,
+            $removalSummary.PathAccountingComplete
+        Write-Warning $attentionMessage
+        Write-360CleanupProgress 'Done' '2'
         exit 2
     }
-    Write-Host "Verification passed. Report: $ReportPath" -ForegroundColor Green
+
+    if ($selectionApplied) {
+        Write-Host 'Selected approved targets that were still confirmed were processed. Unselected targets were preserved.' -ForegroundColor Green
+    }
+    else {
+        Write-Host 'Approved targets that were still confirmed were processed. Restart Windows once, then run Verify.' -ForegroundColor Green
+    }
+    Write-360CleanupProgress 'Done' '0'
     exit 0
 }
-
-$approvalComparison = Compare-ApprovedCleanupFindings -Approved @($approvedInput.Report.Findings) `
-    -Current $initialFindings -SID ([string]$approvedInput.Report.ApprovalContext.UserSid)
-$resolvedSelection = Resolve-CleanupSelection -Approved @($approvedInput.Report.Findings) `
-    -Eligible @($approvalComparison.Eligible) -Current $initialFindings -SelectedIds $selectedFindingIdList `
-    -UserSid ([string]$approvedInput.Report.ApprovalContext.UserSid) -SelectionApplied:$selectionApplied
-$removalSummary = [ordered]@{}
-$actions = @(Remove-ConfirmedFindings -Findings @($resolvedSelection.Eligible) -AllowExplorerRestart:$AllowExplorerRestart `
-    -ForceLockedTargets:$ForceLockedTargets -Summary $removalSummary)
-$remainingFindings = @()
-$remainingConfirmed = $null
-$remainingSelected = $null
-if ([bool]$removalSummary.PostVendorMutationBlocked) {
-    $remainingFindings = @($initialFindings)
-    $removalSummary['ImmediateRescanComplete'] = $false
+catch {
+    Write-360CleanupProgress 'Error' $_.Exception.Message
+    throw
 }
-else {
-    $remainingFindings = @(Get-360Findings -IncludeProfiles:$IncludeBrowserProfiles)
-    $remainingFindings = @(Add-CleanupSelectionIds -Findings $remainingFindings -UserSid $selectionSid)
-    $remainingConfirmed = @($remainingFindings | Where-Object { $_.Confidence -eq 'Confirmed' }).Count
-    if ($selectionApplied) {
-        $selectedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-        foreach ($id in $selectedFindingIdList) { [void]$selectedSet.Add($id) }
-        $remainingSelected = @($remainingFindings | Where-Object {
-            $_.Confidence -eq 'Confirmed' -and -not $_.Offline -and
-                $selectedSet.Contains([string]$_.SelectionId)
-        }).Count
-    }
-    else { $remainingSelected = $remainingConfirmed }
-    $removalSummary['ImmediateRescanComplete'] = $true
+finally {
+    Close-360CleanupProgressFile
 }
-$removalSummary['ApprovedConfirmed'] = [int]$approvalComparison.ApprovedCount
-$removalSummary['EligibleApproved'] = @($approvalComparison.Eligible).Count
-$removalSummary['NewSinceApproval'] = @($approvalComparison.NewSinceApproval).Count
-$removalSummary['MissingSinceApproval'] = @($approvalComparison.MissingSinceApproval).Count
-$removalSummary['NoLongerConfirmed'] = @($approvalComparison.NoLongerConfirmed).Count
-$removalSummary['SelectionApplied'] = [bool]$selectionApplied
-$removalSummary['SelectedConfirmedFindings'] = @($resolvedSelection.Eligible).Count
-$removalSummary['UnselectedConfirmedFindings'] = @($resolvedSelection.UnselectedCurrent).Count
-$removalSummary['ImmediateRemainingConfirmed'] = $remainingConfirmed
-$removalSummary['NoImmediateConfirmedFindings'] = ($null -ne $remainingConfirmed -and $remainingConfirmed -eq 0)
-$removalSummary['ImmediateRemainingSelected'] = $remainingSelected
-$removalSummary['NoImmediateSelectedFindings'] = ($null -ne $remainingSelected -and $remainingSelected -eq 0)
-Save-CleanupReport -Path $ReportPath -RunMode $Mode -Findings $remainingFindings -Actions $actions `
-    -Summary $removalSummary -ApprovalContext $approvedInput.Report.ApprovalContext `
-    -ApprovedReportHash $ApprovedReportHash -OutcomeRunId $OutcomeRunId `
-    -IncludeIdentity:$IncludeIdentityInReport
-
-Write-Host ''
-Write-Host 'Removal actions:' -ForegroundColor Cyan
-$actions | Format-Table Time, Action, Target, Result, Detail -AutoSize -Wrap
-Show-RemovalSummary $removalSummary
-Write-Host ''
-if ([bool]$removalSummary.ImmediateRescanComplete) {
-    Write-Host 'Remaining findings:' -ForegroundColor Cyan
-}
-else {
-    Write-Warning 'Findings below are the last safe pre-mutation snapshot, not proof of current remaining state.'
-    Write-Host 'Last safe pre-mutation findings:' -ForegroundColor Cyan
-}
-Show-Findings $remainingFindings
-Write-Host "Report: $ReportPath" -ForegroundColor Cyan
-
-if (Test-RemovalOutcomeRequiresAttention -Summary $removalSummary -RemainingConfirmed $remainingSelected) {
-    $remainingConfirmedText = if ([bool]$removalSummary.ImmediateRescanComplete) {
-        [string]$remainingSelected
-    }
-    else { 'unknown (immediate rescan blocked)' }
-    $remainingLabel = if ($selectionApplied) { 'selected confirmed finding(s)' } else { 'confirmed finding(s)' }
-    $attentionMessage = ("Cleanup requires attention: {0} {1} remain, {2} path target(s) are unresolved, " +
-        "{3} ACL repair(s) failed, and path accounting complete is {4}. Reboot and run Verify; do not broaden deletion without review.") -f `
-        $remainingConfirmedText, $remainingLabel, $removalSummary.UnresolvedPathTargets, $removalSummary.AclRepairFailures,
-        $removalSummary.PathAccountingComplete
-    Write-Warning $attentionMessage
-    exit 2
-}
-
-if ($selectionApplied) {
-    Write-Host 'Selected approved targets that were still confirmed were processed. Unselected targets were preserved.' -ForegroundColor Green
-}
-else {
-    Write-Host 'Approved targets that were still confirmed were processed. Restart Windows once, then run Verify.' -ForegroundColor Green
-}
-exit 0

@@ -4,6 +4,8 @@ param()
 $ErrorActionPreference = 'Stop'
 $scriptPath = Join-Path $PSScriptRoot 'Invoke-360Cleanup.ps1'
 $selectorPath = Join-Path $PSScriptRoot 'Select-360Cleanup.ps1'
+$uiLibraryPath = Join-Path $PSScriptRoot 'Windows360Cleaner.Library.ps1'
+$summaryPath = Join-Path $PSScriptRoot 'Show-360Summary.ps1'
 $scanCmd = Join-Path $PSScriptRoot 'Scan-360.cmd'
 $removeCmd = Join-Path $PSScriptRoot 'Remove-360.cmd'
 
@@ -64,12 +66,12 @@ function Invoke-CleanupScriptProcess {
 
 $tokens = $null
 $parseErrors = $null
-foreach ($sourcePath in @($scriptPath, $selectorPath, $PSCommandPath)) {
+foreach ($sourcePath in @($scriptPath, $selectorPath, $uiLibraryPath, $summaryPath, $PSCommandPath)) {
     $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
     Assert-True ($sourceBytes.Length -ge 3 -and $sourceBytes[0] -eq 0xEF -and $sourceBytes[1] -eq 0xBB -and $sourceBytes[2] -eq 0xBF) `
         "PowerShell 5.1 compatibility requires a UTF-8 BOM: $sourcePath"
 }
-foreach ($sourcePath in @($scriptPath, $selectorPath)) {
+foreach ($sourcePath in @($scriptPath, $selectorPath, $uiLibraryPath, $summaryPath)) {
     $tokens = $null
     $parseErrors = $null
     [void][System.Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
@@ -89,7 +91,7 @@ try {
 
     & $scriptPath -Mode Scan -ReportPath $scanReport
     Assert-True (Test-Path -LiteralPath $scanReport) 'Scan did not create a report.'
-    $json = Get-Content -LiteralPath $scanReport -Raw | ConvertFrom-Json
+    $json = Get-Content -LiteralPath $scanReport -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-True ($json.SchemaVersion -eq 2 -and [bool]$json.Timestamp -and $json.Mode -eq 'Scan' -and
         $null -ne $json.Findings -and $null -ne $json.ApprovalContext) 'Report schema is incomplete.'
     Assert-True ($json.PSObject.Properties.Name -contains 'Summary') 'Report schema must expose a Summary field.'
@@ -205,7 +207,7 @@ try {
         'The summary must not describe a confirmed-finding count as an overall rescan pass.'
     $summaryReport = Join-Path $fixtureRoot 'removal-summary.json'
     Save-CleanupReport -Path $summaryReport -RunMode Remove -Findings @() -Actions $safeActions -Summary $safeSummary
-    $summaryJson = Get-Content -LiteralPath $summaryReport -Raw | ConvertFrom-Json
+    $summaryJson = Get-Content -LiteralPath $summaryReport -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-True ($summaryJson.Summary.TotalItemsRemoved -eq 2 -and $summaryJson.Summary.FilesRemoved -eq 1) `
         'The JSON report did not preserve the removal summary.'
     $repeatSummary = [ordered]@{}
@@ -343,10 +345,25 @@ $additionalSuites = @(
     (Join-Path $PSScriptRoot '..\tests\Test-Approval.ps1')
     (Join-Path $PSScriptRoot '..\tests\Test-PathSafety.ps1')
     (Join-Path $PSScriptRoot '..\tests\Test-VendorUninstaller.ps1')
+    (Join-Path $PSScriptRoot '..\tests\Test-Verify.ps1')
+    (Join-Path $PSScriptRoot '..\tests\Test-UiLibrary.ps1')
+    (Join-Path $PSScriptRoot '..\tests\Test-UiContract.ps1')
+    (Join-Path $PSScriptRoot '..\tests\Test-UiLayout.ps1')
+    (Join-Path $PSScriptRoot '..\tests\Test-AgentSummary.ps1')
 )
 foreach ($suitePath in $additionalSuites) {
     Write-Host ("Running {0}..." -f (Split-Path -Leaf $suitePath)) -ForegroundColor Cyan
     & $suitePath -CleanerScriptPath $scriptPath
+}
+
+# The release ZIP intentionally omits tools\, so the packaging suite runs only from a repository checkout.
+$packagingSuite = Join-Path $PSScriptRoot '..\tests\Test-Packaging.ps1'
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '..\tools\Build-Release.ps1') -PathType Leaf) {
+    Write-Host 'Running Test-Packaging.ps1...' -ForegroundColor Cyan
+    & $packagingSuite -CleanerScriptPath $scriptPath
+}
+else {
+    Write-Host 'Skipping Test-Packaging.ps1: tools\Build-Release.ps1 is not part of this package.' -ForegroundColor Yellow
 }
 
 Write-Host 'All Windows 360 Cleaner test suites passed.' -ForegroundColor Green

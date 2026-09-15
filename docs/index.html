@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="google-site-verification" content="o7w4aHmEi8FS9NcWc96hhytOdJcixBQzVgvijDYrq10">
   <meta name="color-scheme" content="light">
-  <title>Windows 360 Cleaner：先扫描、再确认的清理技能</title>
-  <meta name="description" content="面向 Windows 10/11 的开源 AI Agent 技能包：只读扫描 360/Qihoo 组件，区分 Confirmed 与 ReviewOnly，经人工确认后精确删除，并用 JSON 报告和 Verify 复核。">
+  <title>Windows 360 Cleaner：先检查、再由你确认的 360 软件清理工具</title>
+  <meta name="description" content="面向 Windows 10/11 的开源 AI Agent 技能包：对 Agent 说“帮我检查这台电脑上的 360 软件”，它会先检查，再用大白话告诉你哪些建议删除、哪些不删除，只删除你确认的内容；Agent 不能运行本机命令时，解压后双击“开始检查”，窗口里每一行只回答删不删。">
 
   <link rel="canonical" href="https://longxl6.github.io/windows-360-cleaner/">
   <link rel="alternate" hreflang="zh-Hans" href="https://longxl6.github.io/windows-360-cleaner/">
@@ -17,19 +17,19 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Windows 360 Cleaner">
   <meta property="og:locale" content="zh_CN">
-  <meta property="og:title" content="Windows 360 Cleaner：先扫描、再确认的清理技能">
-  <meta property="og:description" content="先只读扫描，再由你确认精确目标；保留证据不足的项目，并用 JSON 报告和 Verify 复核结果。">
+  <meta property="og:title" content="Windows 360 Cleaner：先检查、再由你确认的 360 软件清理工具">
+  <meta property="og:description" content="对 AI Agent 说一句话，它用大白话告诉你每个 360 软件删不删，只删除你确认的；没有能运行命令的 Agent，就双击“开始检查”。重启后再检查一遍。">
   <meta property="og:url" content="https://longxl6.github.io/windows-360-cleaner/">
   <meta property="og:image" content="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg">
   <meta property="og:image:width" content="1600">
   <meta property="og:image:height" content="640">
-  <meta property="og:image:alt" content="Windows 360 Cleaner 从扫描、人工确认到验证的安全流程">
+  <meta property="og:image:alt" content="Windows 360 Cleaner 从检查、逐项确认到重启后再检查的流程示意图">
 
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Windows 360 Cleaner：先扫描、再确认的清理技能">
-  <meta name="twitter:description" content="开源的 Windows 360/Qihoo 清理技能包：只读扫描、人工确认、精确处理、报告复核。">
+  <meta name="twitter:title" content="Windows 360 Cleaner：先检查、再由你确认的 360 软件清理工具">
+  <meta name="twitter:description" content="开源的 360 软件清理 AI Agent 技能包：先检查、用大白话告诉你删不删、你确认后才删除、重启后再检查。">
   <meta name="twitter:image" content="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg">
-  <meta name="twitter:image:alt" content="Windows 360 Cleaner 从扫描、人工确认到验证的安全流程">
+  <meta name="twitter:image:alt" content="Windows 360 Cleaner 从检查、逐项确认到重启后再检查的流程示意图">
 
   <script type="application/ld+json">
   {
@@ -37,11 +37,13 @@
     "@type": "SoftwareSourceCode",
     "@id": "https://longxl6.github.io/windows-360-cleaner/#software",
     "name": "Windows 360 Cleaner Skill",
-    "description": "面向 AI Agent 的开源 Windows 360/Qihoo 软件审计与精确清理技能包。",
+    "description": "面向 Windows 10/11 的开源 AI Agent 技能包：检查 360/Qihoo 软件，用大白话说明删不删，只精确删除用户确认的内容；附带本地图形窗口。",
     "url": "https://longxl6.github.io/windows-360-cleaner/",
     "image": "https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg",
     "codeRepository": "https://github.com/LongXL6/windows-360-cleaner",
     "programmingLanguage": "PowerShell",
+    "runtimePlatform": "Windows PowerShell 5.1",
+    "version": "1.0.0",
     "license": "https://github.com/LongXL6/windows-360-cleaner/blob/main/LICENSE",
     "inLanguage": "zh-Hans",
     "isAccessibleForFree": true
@@ -58,8 +60,10 @@
         <span>Windows 360 Cleaner</span>
       </a>
       <nav class="site-nav" aria-label="主要导航">
-        <a href="#first-run">新手流程</a>
-        <a href="#safety">安全边界</a>
+        <a href="#agent">用 AI Agent</a>
+        <a href="#first-run">双击“开始检查”</a>
+        <a href="#screenshots">界面截图</a>
+        <a href="#safety">删不删</a>
         <a href="#faq">常见问题</a>
         <a class="language-link" href="./en/" lang="en" hreflang="en">English</a>
       </nav>
@@ -69,17 +73,15 @@
   <main id="main-content">
     <section class="hero shell" aria-labelledby="page-title">
       <div class="hero-copy">
-        <p class="context-line">可让 AI Agent 协助，也可按指南直接双击脚本</p>
-        <h1 id="page-title">清理 360 软件，从一次扫描开始</h1>
-        <p class="hero-lede">
-          Windows 360 Cleaner 既支持 Agent 按规则协助，也提供无需 Agent 的双击流程。
-          它先在本机扫描，把证据充分的目标与待人工判断的项目分开；只有你审阅报告并明确批准后，才会处理仍然匹配的精确目标。
-        </p>
+        <p class="context-line">不用懂命令：对 AI Agent 说一句话，或者下载后双击</p>
+        <h1 id="page-title">删除 360 软件，先从检查电脑开始</h1>
+        <p class="hero-lede">这是一个开源的 AI Agent 技能包。对能在电脑上运行命令的 Agent 说“帮我检查这台电脑上的 360 软件”，它会先检查，再用大白话告诉你 360 安全卫士、360 浏览器、软件管家、多绘屏保等每个软件“可以删除”还是“不删除”；你说出编号并确认后，它才会删除。Agent 不能运行本机命令时，下载并全部解压后双击“开始检查”，窗口里说的是同样的话，打开时一个都不勾选。</p>
         <div class="hero-actions" aria-label="开始使用">
-          <a class="button button-primary" href="https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip">下载仓库 ZIP</a>
+          <a class="button button-primary" href="https://github.com/LongXL6/windows-360-cleaner/archive/refs/heads/main.zip">下载 ZIP</a>
+          <a class="button button-secondary" href="#agent">看看怎么对 Agent 说</a>
           <a class="button button-secondary" href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.md">阅读中文新手指南</a>
         </div>
-        <p class="local-note">这是项目介绍页。扫描和报告都在你的 Windows 电脑上本地完成。</p>
+        <p class="local-note">带版本号的 ZIP 发布后，可以在 <a href="https://github.com/LongXL6/windows-360-cleaner/releases">GitHub Releases 页面</a>下载。本页只是介绍，检查和删除都在你自己的电脑上进行。</p>
       </div>
 
       <figure class="hero-figure">
@@ -87,93 +89,231 @@
           src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/readme/windows-360-cleaner-hero.jpg"
           width="1600"
           height="640"
-          alt="AI Agent 按扫描、人工确认、精确清理和验证四步处理 Windows 360 软件"
+          alt="示意图：在本机检查、逐项确认、只删除你选的内容、保留个人文件，最后再检查一遍"
         >
         <figcaption>
-          <span>扫描不是批准</span>
-          <span>删除不是验证</span>
+          <span>检查只读取，不删除</span>
+          <span>删除后重启，再检查</span>
         </figcaption>
       </figure>
     </section>
 
     <dl class="fact-strip shell" aria-label="项目基本信息">
       <div>
+        <dt>版本</dt>
+        <dd>1.0.0</dd>
+      </div>
+      <div>
         <dt>系统</dt>
         <dd>Windows 10 / 11</dd>
       </div>
       <div>
+        <dt>用法</dt>
+        <dd>AI Agent 技能包，附本地窗口</dd>
+      </div>
+      <div>
         <dt>运行环境</dt>
-        <dd>PowerShell 5.1+</dd>
+        <dd>系统自带 PowerShell 5.1，无需安装</dd>
       </div>
       <div>
-        <dt>许可证</dt>
-        <dd>MIT</dd>
-      </div>
-      <div>
-        <dt>默认原则</dt>
-        <dd>先扫描，不直接删除</dd>
+        <dt>删除前</dt>
+        <dd>必须你亲自确认</dd>
       </div>
     </dl>
 
-    <section class="section shell" id="first-run" aria-labelledby="first-run-title">
+    <section class="section shell" id="agent" aria-labelledby="agent-title">
       <div class="section-heading">
-        <p>第一次使用</p>
-        <h2 id="first-run-title">按顺序完成四步，不要跳过报告审阅</h2>
+        <p>用 AI Agent（推荐）</p>
+        <h2 id="agent-title">说一句话，Agent 告诉你删不删</h2>
+        <p class="section-intro">Agent 按技能里的 SKILL.md 运行检查，再用项目自带的 Show-360Summary.ps1 把结果变成大白话。它可以给建议，但删不删、删哪几个，只能由你来说。</p>
       </div>
 
       <ol class="step-list">
         <li>
           <span class="step-number" aria-hidden="true">1</span>
           <div>
-            <h3>下载并解压</h3>
-            <p>从官方 GitHub 仓库下载 ZIP，完整解压后再运行脚本。不要使用不明转载或修改版。</p>
+            <h3>让 Agent 用上这个技能</h3>
+            <p>Codex 用户把整个仓库复制到 %USERPROFILE%\.codex\skills\windows-360-cleaner。其他能运行本机命令的 Agent，把仓库地址发给它，让它先完整读取 SKILL.md。不确定的话，先问它：“你能在这台 Windows 电脑上运行 PowerShell 吗？”</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">2</span>
           <div>
-            <h3>先运行 Scan</h3>
-            <p>双击 <code>scripts\Scan-360.cmd</code>。只读扫描后会弹出选择窗口，默认一个都不选。</p>
+            <h3>对它说一句话</h3>
+            <p>“帮我检查这台电脑上的 360 软件，用大白话告诉我哪些建议删除、哪些不删除，只删除我确认的。”检查不会删除任何东西。</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">3</span>
           <div>
-            <h3>逐项审阅并勾选</h3>
-            <p>只有绿色 Confirmed 可选，黄色 ReviewOnly 只能查看；未勾选目标会保留。</p>
+            <h3>它按编号告诉你删不删</h3>
+            <p>例如：“1. 360 安全浏览器 —— 可以删除（1 项），1 项不删除。你还在用 360 安全浏览器吗？不用的话建议删除。2. 360 画报 / 多绘屏保 —— 可以删除（3 项），建议删除。3. 360 临时文件 —— 不删除：不能确定是 360 的。要删除哪几个？回复编号就行。”写着“不删除”的，它不会建议删，也不会想办法绕过。</p>
           </div>
         </li>
         <li>
           <span class="step-number" aria-hidden="true">4</span>
           <div>
-            <h3>再次确认后删除，重启后 Verify</h3>
-            <p>点击“删除所选项目”后还会再次确认和请求 UAC。删除是永久操作；完成后重启 Windows，再运行 Verify。</p>
+            <h3>你确认后才删除</h3>
+            <p>回复编号，例如“删除 2”。它先给你看确认内容：要删除的、删除后会怎样、你没选的哪些本工具不会删、删除后不能恢复也不会放进回收站；选了 360 自带的卸载程序时，还会提醒它可能把同一个软件里你没选的部分也删掉。你明确回复“确定删除”，它才开始；Windows 弹出窗口问你是否允许时点“是”。没说的编号都保留，“都删了吧”也只包括“可以删除”的。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">5</span>
+          <div>
+            <h3>自己重启，再让它检查</h3>
+            <p>它会照实告诉你删掉了什么、还剩什么、要不要重启，不会把“没删掉”“不确定”说成完成。它不会替你重启电脑：保存工作后自己重启，再告诉它“重启好了”；换了新的对话，就说“帮我检查上次删除的结果”。</p>
           </div>
         </li>
       </ol>
 
       <p class="guide-callout">
-        需要逐步说明、Agent 提示词和故障处理？
+        网页版豆包等不能运行本机命令的 Agent，碰不到你的电脑：请让它引导你用下面的“开始检查”窗口，它可以帮你看懂窗口里的文字。见
+        <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/doubao.md">豆包指南</a>；完整的示例对话和提示词见
+        <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/README.md#用-ai-agent-使用推荐">README</a>。
+      </p>
+    </section>
+
+    <section class="section shell" id="first-run" aria-labelledby="first-run-title">
+      <div class="section-heading">
+        <p>Agent 不能运行本机命令时</p>
+        <h2 id="first-run-title">双击“开始检查”，六步走完，每一步都由你决定</h2>
+      </div>
+
+      <ol class="step-list">
+        <li>
+          <span class="step-number" aria-hidden="true">1</span>
+          <div>
+            <h3>下载并全部解压</h3>
+            <p>点上面的“下载 ZIP”。在下载好的 ZIP 上点右键，选“全部解压缩”（有的电脑显示为“全部解压”），再打开解压出来的文件夹。不要直接在压缩包里运行，也不要用来路不明的修改版。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">2</span>
+          <div>
+            <h3>双击“开始检查”</h3>
+            <p>双击 <code>开始检查</code>（文件名 <code>开始检查.cmd</code>，内容相同的英文名是 <code>Start-Check.cmd</code>）。打开后先检查电脑，不删除任何东西，窗口只显示当前这一步和已用时间，通常一两分钟。点“停止检查”会停下来，这次结果不会使用。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">3</span>
+          <div>
+            <h3>看懂结果，自己勾选</h3>
+            <p>结果按软件分组，打开时一个都不勾选。“删不删”这一列只有两种答案：“可以删除”由你决定删不删；“不删除：原因”的不能勾选。点任意一行，下方会说明它是什么、删除后会怎样。“全选可以删除的”只会勾选可以删除的，为了安全只会少选、不会多选。不想删，直接点“关闭”。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">4</span>
+          <div>
+            <h3>确认要删除的内容</h3>
+            <p>点“删除选中的内容…”。如果勾选需要调整（例如超过 64 项），工具会先说明怎么改，这时还没有删除任何东西。“确定要删除吗？”窗口会写明：删除后不能恢复，也不会放进回收站；你没选的会保留（勾选了 360 自带的卸载程序时，会单独提醒它可能删掉同一个软件里没选的部分）。先关闭 360 的软件、备份需要的书签，再点红色的“删除”，并在 Windows 弹出的窗口里点“是”。拿不准就点默认的“取消”。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">5</span>
+          <div>
+            <h3>看结果，手动重启电脑</h3>
+            <p>开始删除后不能中途停止，请等它结束。结果页用一个大标题告诉你删掉了没有，例如“删除完成”“还差一步：请重启电脑”“有些没删掉”“不确定有没有删干净”，并写明接下来怎么做；没删掉、不确定、要重启的结果不会显示成成功。工具不会自动重启电脑，请保存工作后自己重启。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-number" aria-hidden="true">6</span>
+          <div>
+            <h3>重启后检查上次删除的结果</h3>
+            <p>再次双击“开始检查”，在“上次删除的记录”里点“检查上次删除的结果”。检查只读取信息，不会删除任何东西；你保留的内容会放在“你保留的”里，不算删除失败。</p>
+          </div>
+        </li>
+      </ol>
+
+      <p class="guide-callout">
+        需要更详细的图文步骤和问题排查？
         <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/getting-started.md">打开完整中文新手指南</a>。
       </p>
+    </section>
+
+    <section class="section shell shots-section" id="screenshots" aria-labelledby="screenshots-title">
+      <div class="section-heading">
+        <p>界面截图</p>
+        <h2 id="screenshots-title">“开始检查”窗口大概是这个样子</h2>
+        <p class="section-intro">下面都是示例数据截图：生成时没有检查或删除任何真实电脑上的内容。你电脑上看到的项目会不一样。点图片可以看大图。</p>
+      </div>
+
+      <div class="shot-grid">
+        <figure class="shot">
+          <a class="shot-link" href="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/03-scan-results.png">
+            <img
+              src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/03-scan-results.png"
+              width="1086"
+              height="713"
+              loading="lazy"
+              decoding="async"
+              alt="示例数据截图：找到 2 个可以删除的 360 软件，检查结果按软件分组，只有勾选、内容、删不删三列，这里勾选了多绘屏保的 3 项，显示为红色的要删除"
+            >
+          </a>
+          <figcaption><strong class="shot-tag">示例数据截图</strong> 检查结果：按软件分组，每一行只回答删不删；这里勾选了多绘屏保的 3 项，下方说明区解释选中的一行，底部显示已选几项要删除，旁边是“全选可以删除的”。</figcaption>
+        </figure>
+
+        <figure class="shot">
+          <a class="shot-link" href="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/04-confirm-delete.png">
+            <img
+              src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/04-confirm-delete.png"
+              width="886"
+              height="633"
+              loading="lazy"
+              decoding="async"
+              alt="示例数据截图：确定要删除吗窗口列出要删除的 3 项、删除后会怎样和会保留的内容，红字写着删除后不能恢复，按钮是取消和红色的删除"
+            >
+          </a>
+          <figcaption><strong class="shot-tag">示例数据截图</strong> 删除前确认：列出要删除的内容和删除后会怎样，写明删除后不能恢复、也不会放进回收站，以及会保留的内容；默认按钮是“取消”。Agent 在对话里给你看的也是这份内容。</figcaption>
+        </figure>
+
+        <figure class="shot">
+          <a class="shot-link" href="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/05-cleanup-result.png">
+            <img
+              src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/05-cleanup-result.png"
+              width="1086"
+              height="713"
+              loading="lazy"
+              decoding="async"
+              alt="示例数据截图：删除完成页面，绿色大标题删除完成，删掉 3 项没删掉 0 项不确定 0 项，下面写着接下来怎么做"
+            >
+          </a>
+          <figcaption><strong class="shot-tag">示例数据截图</strong> 删除结果：大标题说明删掉了没有，建议方便时手动重启，再点“检查上次删除的结果”；统计和操作记录在“详细信息”里。</figcaption>
+        </figure>
+
+        <figure class="shot">
+          <a class="shot-link" href="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/07-verify-result.png">
+            <img
+              src="https://raw.githubusercontent.com/LongXL6/windows-360-cleaner/main/assets/screenshots/07-verify-result.png"
+              width="1086"
+              height="713"
+              loading="lazy"
+              decoding="async"
+              alt="示例数据截图：检查上次删除的结果，上次选的都删干净了，多绘屏保的 3 项已删掉，360 安全浏览器程序文件在你保留的里，状态是还在"
+            >
+          </a>
+          <figcaption><strong class="shot-tag">示例数据截图</strong> 检查上次删除的结果：多绘屏保的 3 项已删掉；360 安全浏览器程序文件是你保留的，还在，这是正常的，不算删除失败。</figcaption>
+        </figure>
+      </div>
     </section>
 
     <section class="section section-ink" id="safety" aria-labelledby="safety-title">
       <div class="shell ink-grid">
         <div class="section-heading section-heading-light">
-          <p>读懂扫描结果</p>
-          <h2 id="safety-title">两个标签，代表两条完全不同的处理边界</h2>
-          <p class="section-intro">分类来自本机路径、产品记录、任务、服务、签名或文件证据。它不是只看名字的模糊匹配。</p>
+          <p>读懂“删不删”</p>
+          <h2 id="safety-title">每一项只有两种答案：可以删除，或者不删除</h2>
+          <p class="section-intro">窗口和 Agent 用同一套说法。判断来自本机的位置、安装记录、定时任务、后台服务、数字签名或文件内容，不是只看名字里有没有“360”。</p>
         </div>
 
         <dl class="signal-list">
           <div class="signal signal-confirmed">
-            <dt>Confirmed</dt>
-            <dd>检测证据满足项目规则。它仍然不会自动删除；你必须先看清精确目标并明确批准。</dd>
+            <dt>可以删除</dt>
+            <dd>这是 360 留下、可以删掉的东西。可以在窗口里勾选，或者在对话里说出它所在软件的编号（说编号会选这个软件里写着“可以删除”的项目，为了安全只会少选，确认内容里会列出来；只想删其中几项，请用“开始检查”窗口）。窗口不替你决定；Agent 可能会说“建议删除”，你还在用的它会先问你。只有你确认的才会删，没选的都保留。</dd>
           </div>
           <div class="signal signal-review">
-            <dt>ReviewOnly</dt>
-            <dd>证据不足、目标含糊、属于驱动或来自离线 Windows。项目只报告，不会自动删除。</dd>
+            <dt>不删除：原因</dt>
+            <dd>
+              例如名字或位置像 360，但不能确定是 360 的。这些内容只显示原因，不能勾选，Agent 也不会建议删除或想办法绕过：<span class="signal-states">不删除：不能确定是 360 的 · 不删除：书签和历史记录 · 不删除：在另一个 Windows 系统里 · 不删除：系统驱动 · 不删除：这是别的软件 · 不删除：信息不完整 · 不删除：请先正常卸载</span>
+            </dd>
           </div>
         </dl>
       </div>
@@ -181,25 +321,25 @@
 
     <section class="section shell preserve-section" aria-labelledby="preserve-title">
       <div class="section-heading">
-        <p>默认保留</p>
+        <p>不会删除的</p>
         <h2 id="preserve-title">正常文件和个人资料不会因为一个名字就被处理</h2>
       </div>
       <div class="preserve-grid">
         <div>
           <h3>普通数字文件</h3>
-          <p>照片、游戏资源、模型、哈希值和其他只在名称中含有“360”的内容不构成产品证据。</p>
+          <p>照片、游戏资源、模型、哈希值和其他只在名称中含有“360”的内容，不算 360 软件的证据。</p>
         </div>
         <div>
           <h3>Windows 与驱动</h3>
-          <p>系统屏保、显卡和网卡驱动、驱动精灵及其他正常软件不会因为关键词被强删。</p>
+          <p>系统屏保、显卡和网卡驱动、驱动精灵等正常软件不会因为关键词被删。360 的系统驱动只列出来，不会删除。</p>
         </div>
         <div>
           <h3>浏览器个人资料</h3>
-          <p>书签、历史记录和会话默认保留。删除浏览器资料需要单独备份、扫描选项和明确批准。</p>
+          <p>浏览器程序和个人资料是两个单独的项目。书签、历史记录等个人资料显示为“不删除：书签和历史记录”，在“开始检查”的窗口里不能勾选，Agent 也不会把它算进要删除的内容。</p>
         </div>
         <div>
-          <h3>其他 Windows 安装</h3>
-          <p>另一块磁盘上的 Windows 只允许扫描和报告；本项目不提供跨系统删除模式。</p>
+          <h3>其他 Windows 系统</h3>
+          <p>另一块磁盘上的 Windows 只检查、只列出来；本项目不提供跨系统删除。</p>
         </div>
       </div>
     </section>
@@ -207,15 +347,12 @@
     <section class="section shell privacy-section" aria-labelledby="privacy-title">
       <div class="privacy-rule" aria-hidden="true"></div>
       <div>
-        <p class="section-label">隐私与报告</p>
-        <h2 id="privacy-title">结果留在本机；公开求助前先检查报告</h2>
+        <p class="section-label">隐私与求助</p>
+        <h2 id="privacy-title">结果留在本机；求助前先检查要发的文字</h2>
       </div>
       <div class="privacy-copy">
-        <p>本介绍页没有分析、广告或跟踪脚本。项目的 Scan、Remove 和 Verify 在本机 PowerShell 中运行，并把结果写入本地 JSON 报告。</p>
-        <p>
-          报告中的电脑名和用户字段默认留空，但批准上下文、用户 SID 和发现路径仍可能暴露身份。
-          保留未经修改的本机 Scan 原件供 Remove 使用；公开求助时另做脱敏副本，不能用修改过的副本继续 Remove。
-        </p>
+        <p>本介绍页没有分析、广告或跟踪脚本。检查、删除和重启后的再次检查都在你的电脑上运行，工具不会上传任何内容。记录文件是 JSON 文件，默认保存在桌面，文件名类似 <code>360-cleanup-scan-….json</code>；你不需要打开它们，窗口和 Agent 都会用大白话说明。</p>
+        <p>需要求助时，在窗口的结果页点“获取帮助”。它会另外生成一份问题信息，尽量隐藏用户名、计算机名、SID、邮箱和私人路径，但可能有遗漏；你可以先修改，发出前请逐行检查。原始记录不会被修改，这份文字也不能用来删除任何东西。“打开求助网页”只会打开浏览器里固定的求助页面，不会替你发送。</p>
       </div>
     </section>
 
@@ -227,30 +364,39 @@
       <div class="faq-list">
         <article>
           <h3>它是“一键清理软件”吗？</h3>
-          <p>不是。它是给 AI Agent 使用的技能包，也提供可双击的备用脚本。核心流程始终是先扫描、人工审阅，再决定是否删除。</p>
+          <p>不是。它先检查电脑，告诉你每一项删不删，只删除你亲自确认的内容。窗口打开时一个都不勾选，“全选可以删除的”也只在你自己点它时才勾选；Agent 可以建议，但只删除你说出的编号。</p>
         </article>
         <article>
-          <h3>它能检查哪些软件或问题？</h3>
-          <p>
-            当前规则覆盖有证据支持的 360 安全卫士、360 浏览器卸载残留、360 画报/多绘屏保（Huabao/Duohui）和相关更新任务，
-            但不保证覆盖所有版本或变体。具体范围见 <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/detection-catalog.md">检测目录</a>。
-          </p>
+          <h3>一定要用 AI Agent 吗？</h3>
+          <p>不一定。推荐用能在电脑上运行命令的 Agent（例如 Codex），它会按 <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/SKILL.md">SKILL.md</a> 检查，再用大白话告诉你删不删。Agent 碰不到你的电脑（例如网页版豆包），或者你不用 Agent，就双击“开始检查”，说法完全一样。豆包用法见<a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/doubao.md">豆包指南</a>。</p>
         </article>
         <article>
-          <h3>Scan 会删除目标软件吗？</h3>
-          <p>不会。Scan 不要求管理员权限，也不会删除目标软件；它会在本机新建一份待审阅的 JSON 报告。</p>
+          <h3>Agent 说“建议删除”，我一定要删吗？</h3>
+          <p>不用。建议只是建议，只有你说出的编号才会删除，没说的都保留。删除前它必须先给你看确认内容，等你明确回复“确定删除”。它说“完成了”却拿不出真实的检查结果，就不要相信。</p>
         </article>
         <article>
-          <h3>看到 ReviewOnly 应该怎么办？</h3>
-          <p>不要手工强删。先保留目标，核对签名、版本和路径；仍无法判断时，提交带脱敏证据的 GitHub Issue。</p>
+          <h3>需要安装什么或管理员权限吗？</h3>
+          <p>不需要安装。Windows 10/11 自带 Windows PowerShell 5.1。检查不需要管理员权限；只有你确认删除时，Windows 才会弹出窗口问你是否允许。</p>
         </article>
         <article>
-          <h3>Remove 成功就代表彻底清理了吗？</h3>
-          <p>不一定。Remove 的动作报告和重启后的 Verify 是两个证据阶段。最终应查看 Verify 报告里是否仍有 Confirmed 项。</p>
+          <h3>它能检查哪些软件？</h3>
+          <p>360 安全卫士/360 杀毒、360 安全浏览器和 360 极速浏览器、360 软件管家、360 画报/多绘屏保、winToolBox 里的 360 程序文件，以及相关的开机自动运行、后台服务和定时自动运行的任务。不保证覆盖所有版本，具体范围见<a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/references/detection-catalog.md">检测目录</a>。</p>
         </article>
         <article>
-          <h3>必须使用 AI Agent 吗？</h3>
-          <p>不必须。可以下载 ZIP，按中文新手指南运行 Scan、审阅报告，再决定是否使用 Remove 和 Verify。</p>
+          <h3>只删了一部分，再检查时会算失败吗？</h3>
+          <p>不会。“检查上次删除的结果”分成“没删掉”“没法确认或没检查完”“新找到的或有变化的”“你保留的，但不见了”“你保留的”和“已删掉”。你保留的内容还在是正常的，不算失败。检查不会删除任何东西；想处理新找到的内容，请重新检查电脑，再自己决定。</p>
+        </article>
+        <article>
+          <h3>在 Windows 弹出的窗口里点了“否”，或显示“不确定有没有删干净”怎么办？</h3>
+          <p>点了“否”时不会删除任何东西，窗口的结果页显示“没有删除任何东西”。“不确定有没有删干净”表示没法确认，不要当作已经删干净：保存工作、手动重启后再检查（窗口里点“检查上次删除的结果”，对话里告诉 Agent “重启好了”）；还是没法确认时，点“获取帮助”。</p>
+        </article>
+        <article>
+          <h3>会自动重启、开机自启或上传数据吗？</h3>
+          <p>不会。工具和 Agent 都不会替你重启电脑，工具不会开机自启，不会常驻后台，也不会上传任何内容。需要重启时，只会提示你自己动手。</p>
+        </article>
+        <article>
+          <h3>怎么求助才不泄露隐私？</h3>
+          <p>点“获取帮助”，逐行检查后再复制或保存，然后在 <a href="https://github.com/LongXL6/windows-360-cleaner/issues">GitHub Issue</a> 里粘贴。不要直接公开原始记录文件，也不要附上没检查过的截图。</p>
         </article>
       </div>
     </section>
@@ -261,9 +407,10 @@
         <h2 id="open-source-title">检查源码，报告可复现的问题</h2>
       </div>
       <div class="open-source-copy">
-        <p>项目以 MIT 许可证开源。遇到无法判断的目标，请优先提交公开 Issue，并只附脱敏后的路径、版本和数字签名信息。</p>
+        <p>项目以 MIT 许可证开源，当前版本 1.0.0。遇到看不懂的内容，请先点“获取帮助”并检查生成的文字，再提交公开 Issue。</p>
         <div class="text-links">
           <a href="https://github.com/LongXL6/windows-360-cleaner">查看 GitHub 仓库</a>
+          <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/CHANGELOG.md">阅读更新日志</a>
           <a href="https://github.com/LongXL6/windows-360-cleaner/issues">提交或查看 Issue</a>
           <a href="https://github.com/LongXL6/windows-360-cleaner/blob/main/LICENSE">阅读 MIT 许可证</a>
         </div>
@@ -273,8 +420,8 @@
 
   <footer class="site-footer">
     <div class="shell footer-inner">
-      <p>Windows 360 Cleaner · 开源 AI Agent 技能包</p>
-      <p>扫描、批准、删除、验证是四个独立步骤。</p>
+      <p>Windows 360 Cleaner v1.0.0 · 开源 AI Agent 技能包与本地窗口</p>
+      <p>检查、确认、删除、再检查是四个独立步骤。</p>
     </div>
   </footer>
 </body>
