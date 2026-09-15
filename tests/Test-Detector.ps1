@@ -61,7 +61,7 @@ try {
         Assert-TestSequenceEqual `
             -Expected @(
                 'Kind', 'Name', 'Target', 'Confidence', 'Reason', 'RemovalType',
-                'ValueName', 'IdentityFingerprint', 'Offline'
+                'ValueName', 'IdentityFingerprint', 'Offline', 'ProductKey'
             ) `
             -Actual @($finding.PSObject.Properties.Name) `
             -Message 'Finding schema changed unexpectedly.'
